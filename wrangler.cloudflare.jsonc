@@ -1,0 +1,31 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "eenstitu-web",
+  "account_id": "f33c4f010e2a54a430ef241795438476",
+  "main": "./worker/index.ts",
+  "compatibility_date": "2026-05-15",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "workers_dev": true,
+  "observability": {
+    "enabled": true
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "eenstitu-db",
+      "database_id": "86f47be7-56da-4d24-b89e-4a124fce4102"
+    }
+  ],
+  "routes": [
+    {
+      "pattern": "eenstitu.com",
+      "custom_domain": true
+    },
+    {
+      "pattern": "www.eenstitu.com",
+      "custom_domain": true
+    }
+  ]
+}
