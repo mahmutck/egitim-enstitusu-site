@@ -109,6 +109,9 @@ async function handleContactForm(request: Request, env: Env) {
   } catch {
     return Response.json({ ok: false, message: "Form bilgileri okunamadı." }, { status: 400 });
   }
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    return jsonError("Form bilgileri okunamadı.");
+  }
 
   const name = String(data.name || "").trim().slice(0, 120);
   const email = String(data.email || "").trim().toLowerCase().slice(0, 254);
@@ -208,7 +211,7 @@ async function handlePasswordReset(request: Request, env: Env) {
   if (!env.SESSION_SECRET) return jsonError("Şifre hizmeti şu anda kullanılamıyor. Lütfen daha sonra tekrar deneyin.", 503);
   await ensureAdminDb(env); const tokenHash=await sha256(token); const reset=await env.DB.prepare("SELECT email,expires_at,used_at FROM password_reset_tokens WHERE token_hash=?").bind(tokenHash).first<{email:string;expires_at:number;used_at:number|null}>();
   if (!reset || reset.used_at || reset.expires_at < Date.now() || !ADMIN_EMAILS.has(reset.email)) return jsonError("Bu bağlantı geçersiz veya süresi dolmuş.",400);
-  await env.DB.batch([env.DB.prepare("UPDATE admin_credentials SET password_hash=?,updated_at=? WHERE email=?").bind(await hmac(passwordProof, env.SESSION_SECRET),Date.now(),reset.email),env.DB.prepare("UPDATE password_reset_tokens SET used_at=? WHERE token_hash=?").bind(Date.now(),tokenHash),env.DB.prepare("DELETE FROM admin_sessions WHERE email=?").bind(reset.email)]);
+  await env.DB.batch([env.DB.prepare("INSERT INTO admin_credentials (email,password_hash,updated_at) VALUES (?,?,?) ON CONFLICT(email) DO UPDATE SET password_hash=excluded.password_hash,updated_at=excluded.updated_at").bind(reset.email,await hmac(passwordProof, env.SESSION_SECRET),Date.now()),env.DB.prepare("UPDATE password_reset_tokens SET used_at=? WHERE token_hash=?").bind(Date.now(),tokenHash),env.DB.prepare("DELETE FROM admin_sessions WHERE email=?").bind(reset.email)]);
   return Response.json({ok:true});
 }
 
@@ -224,7 +227,7 @@ async function handleAdminRecords(request:Request, env:Env) {
 }
 
 async function handleVerification(request:Request, env:Env) {
-  await ensureAdminDb(env); const slug=decodeURIComponent(new URL(request.url).searchParams.get("slug")||"");
+  await ensureAdminDb(env); const rawSlug=new URL(request.url).searchParams.get("slug")||""; const slug=rawSlug==="egitim-enstitusu1"?"eğitim-enstitüsü1":rawSlug;
   const record=await env.DB.prepare("SELECT slug,title,subtitle,graduates_json,note,certificate_url,certificate_label FROM verification_records WHERE slug=?").bind(slug).first();
   if(!record) return jsonError("Kayıt bulunamadı.",404); return Response.json({ok:true,record});
 }
@@ -286,7 +289,7 @@ const worker = {
     const url = new URL(request.url);
     let response: Response;
 
-    if (url.hostname === "www.eenstitu.com") {
+    if (url.hostname === "www.eenstitu.com" || (url.hostname === "eenstitu.com" && url.protocol === "http:")) {
       const canonical = new URL(request.url);
       canonical.protocol = "https:";
       canonical.hostname = "eenstitu.com";

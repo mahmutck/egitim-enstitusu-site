@@ -339,7 +339,7 @@ export default function Home() {
   }
 
   return (
-    <main>
+    <main lang={language}>
       <div className="academic-bar">
         <span>{language === "tr" ? "Psikolojik ve Somatik Araştırmalarda Öncü" : "Leaders in Psychological and Somatic Research"}</span>
         <span>{language === "tr" ? "Araştırma · Eğitim · Uygulama" : "Research · Education · Practice"}</span>
