@@ -121,6 +121,7 @@ test("participant certificates: admin upload, public view/download, replace and 
   await send("/api/admin/reset-password", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token, passwordProof: proof }) });
   const login = await send("/api/admin/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: "info@eenstitu.com", passwordProof: proof }) });
   const cookie = login.headers.get("set-cookie").split(";")[0];
+  const asAdmin = { headers: { Cookie: cookie } };
 
   const slug = "hipnosomatik-00019"; const name = "Zeynep Kabaklı";
   const pdfBytes = new TextEncoder().encode("%PDF-1.7\n% test certificate\n%%EOF");
@@ -140,19 +141,24 @@ test("participant certificates: admin upload, public view/download, replace and 
   assert.match(certificate.pdf, /^\/sertifika\/hipnosomatik-00019\/zeynep-kabakli\.pdf\?v=[a-z0-9]+$/);
   assert.equal(store.size, 2);
 
-  const verification = await (await send(`/api/verification?slug=${slug}`)).json();
+  const anonymous = await (await send(`/api/verification?slug=${slug}`)).json();
+  assert.equal(anonymous.record.admin, false);
+  assert.deepEqual(anonymous.record.certificates, {}, "visitors only see the participant list");
+  assert.equal((await send(certificate.pdf)).status, 404, "certificate files are admin-only");
+  const verification = await (await send(`/api/verification?slug=${slug}`, asAdmin)).json();
+  assert.equal(verification.record.admin, true);
   assert.deepEqual(Object.keys(verification.record.certificates), [name]);
   assert.equal(verification.record.certificates[name].pdf, certificate.pdf);
 
-  const inline = await send(certificate.pdf);
+  const inline = await send(certificate.pdf, asAdmin);
   assert.equal(inline.status, 200);
   assert.equal(inline.headers.get("content-type"), "application/pdf");
   assert.match(inline.headers.get("content-disposition"), /^inline; filename="Zeynep Kabakli - Sertifika\.pdf"; filename\*=UTF-8''Zeynep%20Kabakl%C4%B1%20-%20Sertifika\.pdf$/);
   assert.equal(inline.headers.get("x-frame-options"), "SAMEORIGIN");
-  assert.match(inline.headers.get("cache-control"), /immutable/);
+  assert.match(inline.headers.get("cache-control"), /^private/);
   assert.deepEqual(new Uint8Array(await inline.arrayBuffer()), pdfBytes);
-  assert.match((await send(`${certificate.pdf}&indir=1`)).headers.get("content-disposition"), /^attachment;/);
-  const preview = await send(certificate.preview);
+  assert.match((await send(`${certificate.pdf}&indir=1`, asAdmin)).headers.get("content-disposition"), /^attachment;/);
+  const preview = await send(certificate.preview, asAdmin);
   assert.equal(preview.headers.get("content-type"), "image/jpeg");
 
   const records = await (await send("/api/admin/records", { headers: { Cookie: cookie } })).json();
@@ -163,13 +169,13 @@ test("participant certificates: admin upload, public view/download, replace and 
   assert.notEqual(replaced.certificate.pdf, certificate.pdf);
   assert.equal(replaced.certificate.preview, null);
   assert.equal(store.size, 1, "old version files are removed after replacement");
-  assert.equal((await send(certificate.preview)).status, 404);
+  assert.equal((await send(certificate.preview, asAdmin)).status, 404);
 
   assert.equal((await send("/api/admin/certificates", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ slug, name }) })).status, 401);
   const removed = await send("/api/admin/certificates", { method: "DELETE", headers: { "Content-Type": "application/json", Cookie: cookie }, body: JSON.stringify({ slug, name }) });
   assert.equal(removed.status, 200);
   assert.equal(store.size, 0);
-  assert.equal((await send(replaced.certificate.pdf)).status, 404);
+  assert.equal((await send(replaced.certificate.pdf, asAdmin)).status, 404);
   const malformed = await send("/sertifika/hipnosomatik-00019/Zeynep%20Kabakl%C4%B1.pdf");
   assert.notEqual(malformed.headers.get("content-type"), "application/pdf", "only slugified keys reach the certificate route");
   db.close();
@@ -208,7 +214,12 @@ test("generated certificates: admin settings, serials and public verification da
   assert.equal(record.certificate_settings.date, "14-06-2026");
   assert.equal(record.participant_keys["Zeynep Kabaklı"], "zeynep-kabakli");
 
-  let verification = (await (await send(`/api/verification?slug=${slug}`)).json()).record;
+  const visitor = (await (await send(`/api/verification?slug=${slug}`)).json()).record;
+  assert.equal(visitor.generated, null, "visitors never receive certificate data");
+  assert.deepEqual(visitor.certificates, {});
+  assert.equal(JSON.parse(visitor.graduates_json).length, 18, "visitors still see the participant list");
+  const asAdmin = { headers: { Cookie: cookie } };
+  let verification = (await (await send(`/api/verification?slug=${slug}`, asAdmin)).json()).record;
   assert.deepEqual(verification.generated, { tr: saved.settings.tr, en: saved.settings.en, date: "14-06-2026" });
   assert.equal(Object.keys(verification.certificates).length, 18, "every participant gets a generated certificate");
   assert.deepEqual(verification.certificates["Zeynep Kabaklı"], { key: "zeynep-kabakli", generated: true, serial: "HS-ON-1910" });
@@ -216,11 +227,11 @@ test("generated certificates: admin settings, serials and public verification da
 
   const body = new FormData(); body.set("slug", slug); body.set("name", "Berna Kartal"); body.set("pdf", new File([new TextEncoder().encode("%PDF-1.4 x")], "b.pdf"));
   assert.equal((await send("/api/admin/certificates", { method: "POST", body, headers: { Cookie: cookie } })).status, 200);
-  verification = (await (await send(`/api/verification?slug=${slug}`)).json()).record;
+  verification = (await (await send(`/api/verification?slug=${slug}`, asAdmin)).json()).record;
   assert.ok(verification.certificates["Berna Kartal"].pdf, "an uploaded PDF takes precedence over generation");
 
   await send("/api/admin/certificate-settings", json({ slug, settings: { ...settings, enabled: false } }, cookie));
-  verification = (await (await send(`/api/verification?slug=${slug}`)).json()).record;
+  verification = (await (await send(`/api/verification?slug=${slug}`, asAdmin)).json()).record;
   assert.equal(verification.generated, null);
   assert.deepEqual(Object.keys(verification.certificates), ["Berna Kartal"]);
   db.close();

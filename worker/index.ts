@@ -2,6 +2,7 @@
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
 import { CertificateSettings, parseCertificateSettings, sanitizeCertificateSettings } from "../app/certificates/settings";
+import { certificateKey } from "../app/certificates/key";
 
 interface CertificateStore {
   get(key: string, options: { type: "stream" }): Promise<ReadableStream | null>;
@@ -252,12 +253,14 @@ async function handleVerification(request:Request, env:Env) {
   await ensureAdminDb(env); const rawSlug=new URL(request.url).searchParams.get("slug")||""; const slug=rawSlug==="egitim-enstitusu1"?"eğitim-enstitüsü1":rawSlug;
   const record=await env.DB.prepare("SELECT slug,title,subtitle,graduates_json,note,certificate_url,certificate_label FROM verification_records WHERE slug=?").bind(slug).first<Record<string,unknown>>();
   if(!record) return jsonError("Kayıt bulunamadı.",404);
+  // Certificates are visible to the administrators only; everyone else gets the participant list.
+  if(!await authenticatedEmail(request,env)) return Response.json({ok:true,record:{...record,admin:false,generated:null,certificates:{}}},{headers:{"Cache-Control":"private, no-store"}});
   const files=await env.DB.prepare("SELECT slug,name_key,original_name,pdf_size,has_preview,version FROM certificate_files WHERE slug=?").bind(String(record.slug)).all<CertificateRow>();
   const settingsRow=await env.DB.prepare("SELECT settings_json FROM certificate_settings WHERE slug=?").bind(String(record.slug)).first<{settings_json:string}>();
   const graduatesJson=String(record.graduates_json||"[]");
   const settings=parseCertificateSettings(settingsRow?.settings_json,parseGraduates(graduatesJson));
   const generated=settings?.enabled?{tr:settings.tr,en:settings.en,date:settings.date}:null;
-  return Response.json({ok:true,record:{...record,generated,certificates:certificatesFor(String(record.slug),graduatesJson,files.results,settings)}});
+  return Response.json({ok:true,record:{...record,admin:true,generated,certificates:certificatesFor(String(record.slug),graduatesJson,files.results,settings)}},{headers:{"Cache-Control":"private, no-store"}});
 }
 
 // Participant certificates: PDF + optional JPEG preview in KV, current version in D1.
@@ -265,7 +268,6 @@ type CertificateRow={slug:string;name_key:string;original_name:string|null;pdf_s
 const MAX_CERTIFICATE_PDF=24*1024*1024;
 const MAX_CERTIFICATE_PREVIEW=4*1024*1024;
 
-function certificateKey(name:string) { return slugify(name) || "katilimci"; }
 function certificateStorageKey(slug:string, key:string, version:string, ext:"pdf"|"jpg") { return `certificates/${slug}/${key}/${version}.${ext}`; }
 function certificateUrl(slug:string, key:string, version:string, ext:"pdf"|"jpg") { return `/sertifika/${encodeURIComponent(slug)}/${key}.${ext}?v=${version}`; }
 function parseGraduates(json:string) { try { const list=JSON.parse(json); return Array.isArray(list)?list.map(item=>String(item)):[]; } catch { return []; } }
@@ -357,7 +359,7 @@ function contentDisposition(type:"inline"|"attachment", filename:string) {
 
 async function serveCertificateFile(request:Request, env:Env, slug:string, key:string, ext:"pdf"|"jpg") {
   if(!["GET","HEAD"].includes(request.method)) return new Response("Method Not Allowed",{status:405,headers:{Allow:"GET, HEAD"}});
-  await ensureAdminDb(env);
+  if(!await authenticatedEmail(request,env)) return new Response("Sertifika bulunamadı.",{status:404,headers:{"Content-Type":"text/plain; charset=utf-8"}});
   const row=await env.DB.prepare("SELECT slug,name_key,display_name,has_preview,version FROM certificate_files WHERE slug=? AND name_key=?").bind(slug,key).first<CertificateRow & {display_name:string}>();
   if(!row || !env.CERTIFICATES || (ext==="jpg" && !row.has_preview)) return new Response("Sertifika bulunamadı.",{status:404,headers:{"Content-Type":"text/plain; charset=utf-8"}});
   const body=await env.CERTIFICATES.get(certificateStorageKey(slug,key,row.version,ext),{type:"stream"});
@@ -365,7 +367,7 @@ async function serveCertificateFile(request:Request, env:Env, slug:string, key:s
   const url=new URL(request.url); const current=url.searchParams.get("v")===row.version;
   const headers=new Headers({
     "Content-Type": ext==="pdf" ? "application/pdf" : "image/jpeg",
-    "Cache-Control": current ? "public, max-age=31536000, immutable" : "public, max-age=60",
+    "Cache-Control": current ? "private, max-age=86400" : "private, no-store",
     "X-Robots-Tag": "noindex, nofollow",
   });
   if(ext==="pdf") headers.set("Content-Disposition",contentDisposition(url.searchParams.has("indir")?"attachment":"inline",`${row.display_name.split(" · ")[0]} - Sertifika.pdf`));

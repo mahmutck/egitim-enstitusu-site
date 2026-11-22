@@ -38,18 +38,15 @@ The D1 database holds certificate verification records and administrator authent
 
 ## Participant certificates
 
+Certificates are visible to the two administrators only (signed in at `/admin`). Visitors of a verification page see the participant list; a QR link `/<kayit>#<ad-soyad>` highlights that participant as registered. The API sends certificate data, and `/sertifika/...` serves files, only to an admin session.
+
 ### Generated from the template (default)
 
-`/admin` → record → **Sertifikalar** → **Sertifikaları şablondan üret**. Fill in the Turkish and English text (up to three lines each), the date and the serial numbers (**Boş seri numaralarını doldur** assigns prefix + next number in list order), preview, then save. Nothing is stored per certificate: the visitor's browser builds the certificate from `public/certificate/template.pdf` (blank vector template made from the original Illustrator certificate) with `app/certificates/generator.ts` — a JPEG preview on screen and a PDF on download. Each certificate carries a QR code to `https://eenstitu.com/<kayit>#<ad-soyad>`, which opens that participant's certificate on the record page. Fonts are open-license substitutes (see `public/certificate/fonts/README.txt`); layout coordinates are in points measured on the original.
+`/admin` → record → **Sertifikalar** → **Sertifikaları şablondan üret**. Fill in the Turkish and English text (up to three lines each), the date and the serial numbers (**Boş seri numaralarını doldur** assigns prefix + next number in list order), then save. Each participant row has **Görüntüle** and **İndir**. Nothing is stored per certificate: the visitor's browser builds the certificate from `public/certificate/template.pdf` (blank vector template made from the original Illustrator certificate) with `app/certificates/generator.ts` — a JPEG preview on screen and a PDF on download. Each certificate carries a QR code to `https://eenstitu.com/<kayit>#<ad-soyad>`, which opens the record page with that participant highlighted (administrators also get the certificate opened). Fonts are open-license substitutes (see `public/certificate/fonts/README.txt`); layout coordinates are in points measured on the original.
 
-### Uploaded PDFs
+### Uploaded PDFs (legacy, no admin UI)
 
-
-A participant can also have an uploaded certificate PDF, which takes precedence over the generated one. Upload them from `/admin` → record → **Sertifikalar**, one by one or with **Toplu PDF yükle** (files are matched to participants by file name and can be corrected before upload). The admin page also renders a JPEG preview of the first page so the certificate opens as an image on phones.
-
-- Files are stored in the `eenstitu-certificates` KV namespace (binding `CERTIFICATES`) under `certificates/<slug>/<name-key>/<version>.pdf|jpg`; the current version per participant is in the D1 table `certificate_files`.
-- Public URLs: `/sertifika/<slug>/<name-key>.pdf` (inline, add `?indir=1` to download) and `.jpg` for the preview. `/<slug>#<name-key>` opens that participant's certificate directly.
-- KV free plan: 1 GB per account (~180 certificates at ~5 MB). Move to R2 when it fills up.
+The worker still serves PDFs uploaded earlier through `/api/admin/certificates` (KV namespace `eenstitu-certificates`, binding `CERTIFICATES`, D1 table `certificate_files`); an uploaded PDF takes precedence over the generated certificate. The upload screens were removed from `/admin`.
 
 ## Backups
 

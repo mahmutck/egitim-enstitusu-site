@@ -1,6 +1,7 @@
 "use client";
 
 import { ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { certificateKey } from "../certificates/key";
 
 type FileCertificate = { key: string; pdf: string; preview: string | null };
 type GeneratedCertificate = { key: string; generated: true; serial: string };
@@ -8,6 +9,8 @@ type Certificate = FileCertificate | GeneratedCertificate;
 type GeneratedTemplate = { tr: string[]; en: string[]; date: string };
 type RecordData = {
   slug: string;
+  /** True when an administrator is signed in; only then are certificates included. */
+  admin?: boolean;
   title: string;
   subtitle?: string;
   graduates_json: string;
@@ -35,6 +38,7 @@ export default function RemoteCertificateRecord({ slug }: { slug: string }) {
   const [open, setOpen] = useState<Viewer | null>(null);
   const [downloading, setDownloading] = useState<string | null>(null);
   const [downloadError, setDownloadError] = useState("");
+  const [highlighted, setHighlighted] = useState("");
   const dialogRef = useRef<HTMLDialogElement>(null);
 
   useEffect(() => {
@@ -82,14 +86,18 @@ export default function RemoteCertificateRecord({ slug }: { slug: string }) {
     if (open && dialog && !dialog.open) dialog.showModal();
   }, [open]);
 
-  // Deep link (QR code): /<kayit>#ad-soyad opens that participant's certificate.
+  // QR code link: /<kayit>#ad-soyad highlights the participant; administrators also get the certificate opened.
   useEffect(() => {
-    const certificates = record?.certificates;
-    if (!certificates) return;
+    if (!record) return;
+    const certificates = record.certificates || {};
+    const graduates = JSON.parse(record.graduates_json || "[]") as string[];
     const openFromHash = () => {
       const key = decodeURIComponent(location.hash.slice(1));
-      const entry = key ? Object.entries(certificates).find(([, certificate]) => certificate.key === key) : undefined;
-      if (entry) show(entry[0], entry[1]);
+      const name = key ? graduates.find((item) => certificateKey(item) === key) : undefined;
+      if (!name) return;
+      setHighlighted(name);
+      requestAnimationFrame(() => document.getElementById(`katilimci-${key}`)?.scrollIntoView({ block: "center", behavior: "smooth" }));
+      if (certificates[name]) show(name, certificates[name]);
     };
     openFromHash();
     window.addEventListener("hashchange", openFromHash);
@@ -126,13 +134,14 @@ export default function RemoteCertificateRecord({ slug }: { slug: string }) {
               <span>Başarı Kaydı</span>
               <b>{graduates.length} katılımcı</b>
             </div>
+            {record.admin && <p className="graduate-admin-note">Yönetici görünümü: sertifikaları yalnızca yöneticiler görür; ziyaretçiler sadece isim listesini görür.</p>}
             {withCertificates > 0 && <p className="graduate-hint">Sertifikayı görmek için katılımcının adına dokunun.</p>}
             {downloadError && <p className="graduate-hint graduate-error" role="alert">{downloadError}</p>}
             <ol className="graduate-list">
               {graduates.map((name) => {
                 const certificate = certificates[name];
                 return (
-                  <li key={name}>
+                  <li key={name} id={`katilimci-${certificateKey(name)}`} className={highlighted === name ? "is-highlighted" : undefined}>
                     {certificate ? (
                       <>
                         <button type="button" className="graduate-name graduate-link" onClick={() => show(name, certificate)} aria-haspopup="dialog">{name}</button>
@@ -141,6 +150,7 @@ export default function RemoteCertificateRecord({ slug }: { slug: string }) {
                     ) : (
                       <span className="graduate-name">{name}</span>
                     )}
+                    {highlighted === name && !certificate && <span className="graduate-verified">✓ Kayıtlı</span>}
                   </li>
                 );
               })}

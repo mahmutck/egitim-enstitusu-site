@@ -30,8 +30,6 @@ button, input, select, textarea { font: inherit; }
 .certificate-manager-head p:last-child { margin: 10px 0 0; }
 .certificate-manager-actions { display: flex; align-items: center; gap: 18px; flex: 0 0 auto; }
 .certificate-manager-actions > a { color: var(--navy); font-size: 11px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; border-bottom: 1px solid currentColor; padding: 5px 0; }
-.certificate-manager label.button { cursor: pointer; }
-.certificate-manager .is-disabled { opacity: .45; pointer-events: none; }
 .certificate-template { margin-top: 26px; padding: 22px; border: 1px solid var(--line); background: #fbf9f4; }
 .certificate-toggle { display: flex; gap: 14px; align-items: flex-start; cursor: pointer; }
 .certificate-toggle input { width: 20px; height: 20px; margin-top: 2px; accent-color: var(--navy); flex: 0 0 auto; }
@@ -58,19 +56,9 @@ button, input, select, textarea { font: inherit; }
 .certificate-rows small { color: #657285; font-size: 12px; }
 .certificate-row-actions { display: flex; align-items: center; gap: 14px; flex: 0 0 auto; }
 .certificate-row-actions a, .certificate-row-actions label, .certificate-row-actions button { border: 0; background: none; color: var(--navy); cursor: pointer; font-size: 11px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; border-bottom: 1px solid currentColor; padding: 5px 0; }
-.certificate-row-actions button { color: #832e20; }
+.certificate-row-actions button:disabled { opacity: .35; cursor: not-allowed; }
 .certificate-row-actions span { color: #657285; font-size: 12px; }
-.certificate-bulk { margin-top: 26px; padding: 22px; background: var(--paper); border: 1px solid var(--line); }
-.certificate-bulk h3 { margin: 0; color: var(--navy); font-size: 18px; }
-.certificate-bulk p { margin: 8px 0 0; font-size: 14px; }
-.certificate-bulk ul { margin: 18px 0 0; padding: 0; list-style: none; display: grid; gap: 10px; }
-.certificate-bulk li { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1.2fr); gap: 12px; align-items: center; }
-.certificate-bulk li span { overflow: hidden; color: var(--ink); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
-.certificate-bulk li select { width: 100%; padding: 10px; border: 1px solid var(--line); background: white; color: var(--ink); }
-.certificate-bulk li b { grid-column: 1 / -1; color: #832e20; font-size: 12px; }
-.certificate-bulk-actions { display: flex; align-items: center; gap: 22px; margin-top: 20px; }
-.certificate-bulk-actions .admin-forgot { margin-top: 0; }
-@media (max-width:700px){.certificate-manager-head,.certificate-rows li{flex-direction:column;align-items:flex-start}.certificate-bulk li{grid-template-columns:1fr}.certificate-manager-actions{flex-wrap:wrap}}
+@media (max-width:700px){.certificate-manager-head,.certificate-rows li{flex-direction:column;align-items:flex-start}.certificate-manager-actions{flex-wrap:wrap}}
 @media (max-width:700px){.admin-shell{padding:16px}.admin-dashboard>header,.admin-records article{align-items:flex-start;flex-direction:column}.admin-form{grid-template-columns:1fr}.admin-form .wide{grid-column:auto}.admin-dashboard,.admin-card{padding:28px 22px}.admin-records article>div:last-child{width:100%;justify-content:space-between}}
 
 .academic-bar {
@@ -350,6 +338,9 @@ footer { display: grid; grid-template-columns: 1fr auto; gap: 50px; align-items:
 .graduate-link:hover, .graduate-link:focus-visible { color: var(--blue); text-decoration-color: var(--gold); }
 .graduate-download { flex: 0 0 auto; align-self: center; display: inline-flex; align-items: center; gap: 5px; padding: 6px 10px; border: 1px solid var(--line); color: var(--blue); font-family: Arial, Helvetica, sans-serif; font-size: 10px; font-weight: 800; letter-spacing: .1em; white-space: nowrap; transition: background .2s ease, border-color .2s ease; }
 .graduate-download:hover, .graduate-download:focus-visible { background: var(--paper); border-color: var(--gold); }
+.graduate-admin-note { margin: 18px 0 0; padding: 10px 14px; background: #f1ede3; color: var(--navy); font-size: 13px; }
+.graduate-list li.is-highlighted { margin: 0 -12px; padding-left: 12px; padding-right: 12px; background: #f6efdd; box-shadow: inset 3px 0 0 var(--gold); }
+.graduate-verified { flex: 0 0 auto; align-self: center; color: #2d7a58; font-family: Arial, Helvetica, sans-serif; font-size: 10px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; white-space: nowrap; }
 button.graduate-download { background: none; cursor: pointer; }
 button.graduate-download:disabled { cursor: progress; opacity: .7; }
 .graduate-error { color: #832e20; }
