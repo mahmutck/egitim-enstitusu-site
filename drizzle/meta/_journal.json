@@ -15,6 +15,13 @@
       "when": 1795307020818,
       "tag": "0001_certificate_files",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1795308561023,
+      "tag": "0002_certificate_settings",
+      "breakpoints": true
     }
   ]
 }

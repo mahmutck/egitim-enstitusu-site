@@ -174,3 +174,54 @@ test("participant certificates: admin upload, public view/download, replace and 
   assert.notEqual(malformed.headers.get("content-type"), "application/pdf", "only slugified keys reach the certificate route");
   db.close();
 });
+
+test("generated certificates: admin settings, serials and public verification data", async () => {
+  const { DatabaseSync } = await import("node:sqlite");
+  const db = new DatabaseSync(":memory:");
+  const store = new Map();
+  const kv = { async get(key) { const v = store.get(key); return v ? new Blob([v]).stream() : null; }, async put(key, value) { store.set(key, new Uint8Array(value)); }, async delete(key) { store.delete(key); } };
+  const testEnv = { ...env, SESSION_SECRET: "test-only-not-a-production-secret", CERTIFICATES: kv, DB: {
+    prepare(sql) { let values=[]; return { bind(...args) { values=args; return this; }, async run() { return db.prepare(sql).run(...values); }, async first() { return db.prepare(sql).get(...values) ?? null; }, async all() { return { results: db.prepare(sql).all(...values) }; }, sql() { return [sql,values]; } }; },
+    async batch(statements) { return statements.map(s => { const [sql,args]=s.sql(); return db.prepare(sql).run(...args); }); },
+  } };
+  const send = (path, init = {}) => worker.fetch(new Request(`https://eenstitu.com${path}`, { ...init, headers: { Origin: "https://eenstitu.com", ...(init.headers || {}) } }), testEnv, context);
+  const json = (body, cookie) => ({ method: "POST", headers: { "Content-Type": "application/json", ...(cookie ? { Cookie: cookie } : {}) }, body: JSON.stringify(body) });
+  await send("/api/admin/session");
+  const token = "generated-test-token";
+  db.prepare("INSERT INTO password_reset_tokens VALUES (?,?,?,NULL)").run(Buffer.from(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token))).toString("base64url"), "info@eenstitu.com", Date.now() + 60000);
+  const proof = "C".repeat(43);
+  await send("/api/admin/reset-password", json({ token, passwordProof: proof }));
+  const cookie = (await send("/api/admin/login", json({ email: "info@eenstitu.com", passwordProof: proof }))).headers.get("set-cookie").split(";")[0];
+
+  const slug = "hipnosomatik-00019";
+  const settings = { enabled: true, tr: ["15-22 Mayıs 2026 tarihinde gerçekleştirilen", "  ", "ikinci   satır"], en: ["Line one", "Line two", "Line three", "Line four"], date: "14-06-2026", serialPrefix: "HS-ON-", nextSerial: 1919, serials: { "Zeynep Kabaklı": "HS-ON-1910", "Listede Yok": "X-1" } };
+  assert.equal((await send("/api/admin/certificate-settings", json({ slug, settings }))).status, 401);
+  assert.equal((await send("/api/admin/certificate-settings", json({ slug: "olmayan-kayit", settings }, cookie))).status, 404);
+  assert.equal((await send("/api/admin/certificate-settings", json({ slug, settings: { ...settings, tr: [] } }, cookie))).status, 400);
+  const saved = await (await send("/api/admin/certificate-settings", json({ slug, settings }, cookie))).json();
+  assert.deepEqual(saved.settings.tr, ["15-22 Mayıs 2026 tarihinde gerçekleştirilen", "ikinci satır"]);
+  assert.equal(saved.settings.en.length, 3, "at most three lines");
+  assert.deepEqual(saved.settings.serials, { "Zeynep Kabaklı": "HS-ON-1910" }, "serials of unknown participants are dropped");
+
+  const records = await (await send("/api/admin/records", { headers: { Cookie: cookie } })).json();
+  const record = records.records.find(r => r.slug === slug);
+  assert.equal(record.certificate_settings.date, "14-06-2026");
+  assert.equal(record.participant_keys["Zeynep Kabaklı"], "zeynep-kabakli");
+
+  let verification = (await (await send(`/api/verification?slug=${slug}`)).json()).record;
+  assert.deepEqual(verification.generated, { tr: saved.settings.tr, en: saved.settings.en, date: "14-06-2026" });
+  assert.equal(Object.keys(verification.certificates).length, 18, "every participant gets a generated certificate");
+  assert.deepEqual(verification.certificates["Zeynep Kabaklı"], { key: "zeynep-kabakli", generated: true, serial: "HS-ON-1910" });
+  assert.equal(verification.certificates["Berna Kartal"].serial, "");
+
+  const body = new FormData(); body.set("slug", slug); body.set("name", "Berna Kartal"); body.set("pdf", new File([new TextEncoder().encode("%PDF-1.4 x")], "b.pdf"));
+  assert.equal((await send("/api/admin/certificates", { method: "POST", body, headers: { Cookie: cookie } })).status, 200);
+  verification = (await (await send(`/api/verification?slug=${slug}`)).json()).record;
+  assert.ok(verification.certificates["Berna Kartal"].pdf, "an uploaded PDF takes precedence over generation");
+
+  await send("/api/admin/certificate-settings", json({ slug, settings: { ...settings, enabled: false } }, cookie));
+  verification = (await (await send(`/api/verification?slug=${slug}`)).json()).record;
+  assert.equal(verification.generated, null);
+  assert.deepEqual(Object.keys(verification.certificates), ["Berna Kartal"]);
+  db.close();
+});

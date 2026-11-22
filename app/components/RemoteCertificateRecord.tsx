@@ -1,17 +1,25 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { ReactNode, useCallback, useEffect, useRef, useState } from "react";
 
-type Certificate = { key: string; pdf: string; preview: string | null };
+type FileCertificate = { key: string; pdf: string; preview: string | null };
+type GeneratedCertificate = { key: string; generated: true; serial: string };
+type Certificate = FileCertificate | GeneratedCertificate;
+type GeneratedTemplate = { tr: string[]; en: string[]; date: string };
 type RecordData = {
+  slug: string;
   title: string;
   subtitle?: string;
   graduates_json: string;
   note?: string;
   certificate_url?: string;
   certificate_label?: string;
+  generated?: GeneratedTemplate | null;
   certificates?: Record<string, Certificate>;
 };
+type Viewer = { name: string; certificate: Certificate; image: string | null; error: string };
+
+const isGenerated = (certificate: Certificate): certificate is GeneratedCertificate => "generated" in certificate;
 
 function downloadUrl(pdf: string) {
   return `${pdf}${pdf.includes("?") ? "&" : "?"}indir=1`;
@@ -24,7 +32,9 @@ function displayName(name: string) {
 export default function RemoteCertificateRecord({ slug }: { slug: string }) {
   const [record, setRecord] = useState<RecordData | null>(null);
   const [missing, setMissing] = useState(false);
-  const [open, setOpen] = useState<{ name: string; certificate: Certificate } | null>(null);
+  const [open, setOpen] = useState<Viewer | null>(null);
+  const [downloading, setDownloading] = useState<string | null>(null);
+  const [downloadError, setDownloadError] = useState("");
   const dialogRef = useRef<HTMLDialogElement>(null);
 
   useEffect(() => {
@@ -34,22 +44,45 @@ export default function RemoteCertificateRecord({ slug }: { slug: string }) {
       .catch(() => setMissing(true));
   }, [slug]);
 
+  const inputFor = useCallback(async (name: string, certificate: GeneratedCertificate) => {
+    const { verificationUrl } = await import("../certificates/generator");
+    const template = record?.generated;
+    return { name, serial: certificate.serial, date: template?.date || "", tr: template?.tr || [], en: template?.en || [], url: verificationUrl(record?.slug || slug, certificate.key) };
+  }, [record, slug]);
+
   const show = useCallback((name: string, certificate: Certificate) => {
-    setOpen({ name, certificate });
+    setOpen({ name, certificate, image: isGenerated(certificate) ? null : certificate.preview, error: "" });
     history.replaceState(null, "", `#${certificate.key}`);
-  }, []);
+    if (!isGenerated(certificate)) return;
+    (async () => {
+      const { renderCertificateImage } = await import("../certificates/generator");
+      const blob = await renderCertificateImage(await inputFor(name, certificate));
+      const image = URL.createObjectURL(blob);
+      setOpen((current) => (current?.certificate.key === certificate.key ? { ...current, image } : (URL.revokeObjectURL(image), current)));
+    })().catch(() => setOpen((current) => (current ? { ...current, error: "Sertifika görüntülenemedi. Lütfen sayfayı yenileyip tekrar deneyin." } : current)));
+  }, [inputFor]);
 
-  const close = useCallback(() => {
-    dialogRef.current?.close();
-  }, []);
+  const download = useCallback(async (name: string, certificate: GeneratedCertificate) => {
+    setDownloading(certificate.key);
+    setDownloadError("");
+    try {
+      const { buildCertificatePdf, certificateFileName, downloadBlob } = await import("../certificates/generator");
+      downloadBlob(await buildCertificatePdf(await inputFor(name, certificate)), certificateFileName(name));
+    } catch {
+      setDownloadError("PDF hazırlanamadı. Lütfen tekrar deneyin.");
+    } finally {
+      setDownloading(null);
+    }
+  }, [inputFor]);
 
-  // Open the dialog whenever a certificate is selected.
+  const close = useCallback(() => dialogRef.current?.close(), []);
+
   useEffect(() => {
     const dialog = dialogRef.current;
     if (open && dialog && !dialog.open) dialog.showModal();
   }, [open]);
 
-  // Deep link: /<kayit>#ad-soyad opens that participant's certificate.
+  // Deep link (QR code): /<kayit>#ad-soyad opens that participant's certificate.
   useEffect(() => {
     const certificates = record?.certificates;
     if (!certificates) return;
@@ -70,6 +103,15 @@ export default function RemoteCertificateRecord({ slug }: { slug: string }) {
   const certificates = record.certificates || {};
   const withCertificates = graduates.filter((name) => certificates[name]).length;
 
+  const downloadControl = (name: string, certificate: Certificate, className: string, label: ReactNode) =>
+    isGenerated(certificate) ? (
+      <button type="button" className={className} onClick={() => download(name, certificate)} disabled={downloading === certificate.key} aria-label={`${displayName(name)} sertifikasını PDF olarak indir`}>
+        {downloading === certificate.key ? "Hazırlanıyor…" : label}
+      </button>
+    ) : (
+      <a className={className} href={downloadUrl(certificate.pdf)} download aria-label={`${displayName(name)} sertifikasını PDF olarak indir`}>{label}</a>
+    );
+
   return (
     <>
       <section className="certificate-hero">
@@ -85,6 +127,7 @@ export default function RemoteCertificateRecord({ slug }: { slug: string }) {
               <b>{graduates.length} katılımcı</b>
             </div>
             {withCertificates > 0 && <p className="graduate-hint">Sertifikayı görmek için katılımcının adına dokunun.</p>}
+            {downloadError && <p className="graduate-hint graduate-error" role="alert">{downloadError}</p>}
             <ol className="graduate-list">
               {graduates.map((name) => {
                 const certificate = certificates[name];
@@ -92,12 +135,8 @@ export default function RemoteCertificateRecord({ slug }: { slug: string }) {
                   <li key={name}>
                     {certificate ? (
                       <>
-                        <button type="button" className="graduate-name graduate-link" onClick={() => show(name, certificate)} aria-haspopup="dialog">
-                          {name}
-                        </button>
-                        <a className="graduate-download" href={downloadUrl(certificate.pdf)} download aria-label={`${displayName(name)} sertifikasını PDF olarak indir`}>
-                          PDF <span aria-hidden="true">↓</span>
-                        </a>
+                        <button type="button" className="graduate-name graduate-link" onClick={() => show(name, certificate)} aria-haspopup="dialog">{name}</button>
+                        {downloadControl(name, certificate, "graduate-download", <>PDF <span aria-hidden="true">↓</span></>)}
                       </>
                     ) : (
                       <span className="graduate-name">{name}</span>
@@ -122,7 +161,10 @@ export default function RemoteCertificateRecord({ slug }: { slug: string }) {
         ref={dialogRef}
         className="certificate-viewer"
         aria-label={open ? `${displayName(open.name)} sertifikası` : "Sertifika"}
-        onClose={() => { setOpen(null); history.replaceState(null, "", location.pathname + location.search); }}
+        onClose={() => {
+          setOpen((current) => { if (current?.image?.startsWith("blob:")) URL.revokeObjectURL(current.image); return null; });
+          history.replaceState(null, "", location.pathname + location.search);
+        }}
         onClick={(event) => { if (event.target === event.currentTarget) close(); }}
       >
         {open && (
@@ -135,15 +177,14 @@ export default function RemoteCertificateRecord({ slug }: { slug: string }) {
               <button type="button" onClick={close} aria-label="Kapat">×</button>
             </header>
             <div className="certificate-viewer-body">
-              {open.certificate.preview ? (
-                <img src={open.certificate.preview} alt={`${displayName(open.name)} adına düzenlenen sertifika`} />
-              ) : (
-                <iframe src={`${open.certificate.pdf}#view=FitH`} title={`${displayName(open.name)} sertifikası`} />
-              )}
+              {open.error ? <p className="certificate-viewer-status">{open.error}</p>
+                : open.image ? <img src={open.image} alt={`${displayName(open.name)} adına düzenlenen sertifika`} />
+                : isGenerated(open.certificate) ? <p className="certificate-viewer-status">Sertifika hazırlanıyor…</p>
+                : <iframe src={`${open.certificate.pdf}#view=FitH`} title={`${displayName(open.name)} sertifikası`} />}
             </div>
             <footer>
-              <a className="button button-gold" href={downloadUrl(open.certificate.pdf)} download>PDF indir <span aria-hidden="true">↓</span></a>
-              <a className="certificate-viewer-open" href={open.certificate.pdf} target="_blank" rel="noreferrer">Yeni sekmede aç ↗</a>
+              {downloadControl(open.name, open.certificate, "button button-gold", <>PDF indir <span aria-hidden="true">↓</span></>)}
+              {!isGenerated(open.certificate) && <a className="certificate-viewer-open" href={open.certificate.pdf} target="_blank" rel="noreferrer">Yeni sekmede aç ↗</a>}
             </footer>
           </div>
         )}

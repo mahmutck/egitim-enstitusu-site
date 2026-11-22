@@ -43,3 +43,10 @@ export const certificateFiles = sqliteTable("certificate_files", {
   version: text("version").notNull(),
   updatedAt: integer("updated_at").notNull(),
 }, (table) => [primaryKey({ columns: [table.slug, table.nameKey] })]);
+
+// Settings for certificates generated from public/certificate/template.pdf (JSON, see app/certificates/settings.ts).
+export const certificateSettings = sqliteTable("certificate_settings", {
+  slug: text("slug").primaryKey(),
+  settingsJson: text("settings_json").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+});

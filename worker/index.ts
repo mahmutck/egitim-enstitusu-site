@@ -1,6 +1,7 @@
 /** Cloudflare Worker entry point for the vinext-starter template. */
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
+import { CertificateSettings, parseCertificateSettings, sanitizeCertificateSettings } from "../app/certificates/settings";
 
 interface CertificateStore {
   get(key: string, options: { type: "stream" }): Promise<ReadableStream | null>;
@@ -91,6 +92,7 @@ async function ensureAdminDb(env: Env) {
     env.DB.prepare("CREATE TABLE IF NOT EXISTS password_reset_tokens (token_hash TEXT PRIMARY KEY, email TEXT NOT NULL, expires_at INTEGER NOT NULL, used_at INTEGER)"),
     env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_admin_sessions_expires ON admin_sessions(expires_at)"),
     env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_expires ON password_reset_tokens(expires_at)"),
+    env.DB.prepare("CREATE TABLE IF NOT EXISTS certificate_settings (slug TEXT PRIMARY KEY, settings_json TEXT NOT NULL, updated_at INTEGER NOT NULL)"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS certificate_files (slug TEXT NOT NULL, name_key TEXT NOT NULL, display_name TEXT NOT NULL, original_name TEXT, pdf_size INTEGER NOT NULL, has_preview INTEGER NOT NULL DEFAULT 0, version TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (slug, name_key))"),
   ]);
   for (const [slug, title, subtitle, graduates] of seedRecords) await env.DB.prepare("INSERT OR IGNORE INTO verification_records (slug,title,subtitle,graduates_json,created_at,updated_at) VALUES (?,?,?,?,?,?)").bind(slug, title, subtitle, JSON.stringify(graduates), now, now).run();
@@ -231,7 +233,12 @@ async function handleAdminRecords(request:Request, env:Env) {
     const files=await env.DB.prepare("SELECT slug,name_key,original_name,pdf_size,has_preview,version FROM certificate_files").all<CertificateRow>();
     const bySlug=new Map<string,CertificateRow[]>();
     for(const row of files.results) bySlug.set(row.slug,[...(bySlug.get(row.slug)||[]),row]);
-    const records=rows.results.map(record=>({...record,certificates:certificatesFor(String(record.slug),String(record.graduates_json||"[]"),bySlug.get(String(record.slug))||[])}));
+    const settings=await env.DB.prepare("SELECT slug,settings_json FROM certificate_settings").all<{slug:string;settings_json:string}>();
+    const settingsBySlug=new Map(settings.results.map(row=>[row.slug,row.settings_json]));
+    const records=rows.results.map(record=>{
+      const slug=String(record.slug); const graduatesJson=String(record.graduates_json||"[]"); const graduates=parseGraduates(graduatesJson);
+      return {...record,certificates:certificatesFor(slug,graduatesJson,bySlug.get(slug)||[]),certificate_settings:parseCertificateSettings(settingsBySlug.get(slug),graduates),participant_keys:Object.fromEntries(graduates.map(name=>[name,certificateKey(name)]))};
+    });
     return Response.json({ok:true,records,storageReady:Boolean(env.CERTIFICATES)});
   }
   if(!validOrigin(request)) return jsonError("Geçersiz istek kaynağı.",403);
@@ -246,7 +253,11 @@ async function handleVerification(request:Request, env:Env) {
   const record=await env.DB.prepare("SELECT slug,title,subtitle,graduates_json,note,certificate_url,certificate_label FROM verification_records WHERE slug=?").bind(slug).first<Record<string,unknown>>();
   if(!record) return jsonError("Kayıt bulunamadı.",404);
   const files=await env.DB.prepare("SELECT slug,name_key,original_name,pdf_size,has_preview,version FROM certificate_files WHERE slug=?").bind(String(record.slug)).all<CertificateRow>();
-  return Response.json({ok:true,record:{...record,certificates:certificatesFor(String(record.slug),String(record.graduates_json||"[]"),files.results)}});
+  const settingsRow=await env.DB.prepare("SELECT settings_json FROM certificate_settings WHERE slug=?").bind(String(record.slug)).first<{settings_json:string}>();
+  const graduatesJson=String(record.graduates_json||"[]");
+  const settings=parseCertificateSettings(settingsRow?.settings_json,parseGraduates(graduatesJson));
+  const generated=settings?.enabled?{tr:settings.tr,en:settings.en,date:settings.date}:null;
+  return Response.json({ok:true,record:{...record,generated,certificates:certificatesFor(String(record.slug),graduatesJson,files.results,settings)}});
 }
 
 // Participant certificates: PDF + optional JPEG preview in KV, current version in D1.
@@ -259,14 +270,31 @@ function certificateStorageKey(slug:string, key:string, version:string, ext:"pdf
 function certificateUrl(slug:string, key:string, version:string, ext:"pdf"|"jpg") { return `/sertifika/${encodeURIComponent(slug)}/${key}.${ext}?v=${version}`; }
 function parseGraduates(json:string) { try { const list=JSON.parse(json); return Array.isArray(list)?list.map(item=>String(item)):[]; } catch { return []; } }
 
-function certificatesFor(slug:string, graduatesJson:string, rows:CertificateRow[]) {
+type CertificateEntry={key:string;pdf:string;preview:string|null;size:number;originalName:string|null}|{key:string;generated:true;serial:string};
+
+/** Uploaded PDFs win; with generation enabled every other participant gets a generated certificate. */
+function certificatesFor(slug:string, graduatesJson:string, rows:CertificateRow[], settings?:CertificateSettings|null) {
   const byKey=new Map(rows.map(row=>[row.name_key,row]));
-  const result:Record<string,{key:string;pdf:string;preview:string|null;size:number;originalName:string|null}>={};
+  const result:Record<string,CertificateEntry>={};
   for(const name of parseGraduates(graduatesJson)) {
     const key=certificateKey(name); const row=byKey.get(key);
     if(row) result[name]={key,pdf:certificateUrl(slug,key,row.version,"pdf"),preview:row.has_preview?certificateUrl(slug,key,row.version,"jpg"):null,size:row.pdf_size,originalName:row.original_name};
+    else if(settings?.enabled) result[name]={key,generated:true,serial:settings.serials[name]||""};
   }
   return result;
+}
+
+async function handleCertificateSettings(request:Request, env:Env) {
+  const email=await authenticatedEmail(request,env); if(!email) return jsonError("Oturum gerekli.",401);
+  if(!validOrigin(request)) return jsonError("Geçersiz istek kaynağı.",403);
+  const data=await request.json().catch(()=>null) as {slug?:string;settings?:unknown}|null;
+  const slug=String(data?.slug||"").trim();
+  const record=slug?await env.DB.prepare("SELECT graduates_json FROM verification_records WHERE slug=?").bind(slug).first<{graduates_json:string}>():null;
+  if(!record) return jsonError("Kayıt bulunamadı.",404);
+  const settings=sanitizeCertificateSettings(data?.settings,parseGraduates(record.graduates_json));
+  if(settings.enabled && (!settings.tr.length || !settings.en.length)) return jsonError("Türkçe ve İngilizce sertifika metni gereklidir.");
+  await env.DB.prepare("INSERT INTO certificate_settings (slug,settings_json,updated_at) VALUES (?,?,?) ON CONFLICT(slug) DO UPDATE SET settings_json=excluded.settings_json,updated_at=excluded.updated_at").bind(slug,JSON.stringify(settings),Date.now()).run();
+  return Response.json({ok:true,settings});
 }
 
 function startsWith(bytes:Uint8Array, signature:number[]) { return signature.every((value,index)=>bytes[index]===value); }
@@ -428,6 +456,8 @@ const worker = {
       response = ["GET", "POST"].includes(request.method) ? await handleAdminRecords(request, env) : new Response("Method Not Allowed", { status: 405, headers:{Allow:"GET, POST"} });
     } else if (url.pathname === "/api/verification") {
       response = request.method === "GET" ? await handleVerification(request, env) : new Response("Method Not Allowed", { status: 405, headers:{Allow:"GET"} });
+    } else if (url.pathname === "/api/admin/certificate-settings") {
+      response = request.method === "POST" ? await handleCertificateSettings(request, env) : new Response("Method Not Allowed", { status: 405, headers:{Allow:"POST"} });
     } else if (url.pathname === "/api/admin/certificates") {
       response = request.method === "POST" ? await handleCertificateUpload(request, env)
         : request.method === "DELETE" ? await handleCertificateDelete(request, env)
