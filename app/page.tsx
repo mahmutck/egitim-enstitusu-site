@@ -306,6 +306,12 @@ const faculty = [
     title: "Eğitim Asistanı",
     bio: "",
   },
+  {
+    name: "Mahmut Çelik",
+    image: "/images/faculty/mahmut-celik.jpg",
+    title: "Dijital Sistemler ve Teknoloji Yöneticisi",
+    bio: "Enstitünün dijital platformlarının geliştirilmesi, web sitesi ve yönetim sistemlerinin işletilmesi, sertifika ve aday takip süreçlerinin teknik yönetiminden sorumludur.",
+  },
 ] as const;
 
 export default function Home() {
