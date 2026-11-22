@@ -38,17 +38,15 @@ The D1 database holds certificate verification records and administrator authent
 
 ## Participant certificates
 
-Visitors of a record page (`/<kayit>`) see the participant list only; the record API sends certificate data only to an admin session. A single certificate is visible to the administrators and to whoever has that certificate's QR code / permanent link (`/sertifika/<token>`, noindex and disallowed in robots.txt).
+Visitors of a record page (`/<kayit>`) see the participant list only; the record API sends certificate links only to an admin session. A single certificate opens for whoever has its QR code / permanent link.
 
-### Generated from the template (default)
+**Admin:** `/admin` → record → **Sertifikalar** shows the participant list. Each row has **Görüntüle** (PDF in a new tab), **İndir** (PDF download) and **Düzenle** (name on the certificate and serial number; the QR code and link stay the same). Certificate text, date and serial numbering are under the folded **Sertifika metni, tarih ve seri numaraları** section.
 
-Each record has a training date range (**Eğitim tarih aralığı**, picked on a calendar in the record form; stored in the D1 table `training_dates`). In certificate text, `{tarih}` becomes the Turkish range (e.g. "15-22 Mayıs 2026") and `{date}` the English one ("15–22 May 2026").
+**Training dates:** each record has a training date range (**Eğitim tarih aralığı**, calendar in the record form; D1 table `training_dates`). In certificate text `{tarih}` becomes the Turkish range ("15-22 Mayıs 2026") and `{date}` the English one ("15–22 May 2026"). An empty certificate date uses the training end date.
 
-`/admin` → record → **Sertifikalar** → **Sertifikaları şablondan üret**. Fill in the Turkish and English text (up to three lines each), the date and the serial numbers (**Boş seri numaralarını doldur** assigns prefix + next number in list order), then save. Each participant row has **Görüntüle** and **İndir**. Nothing is stored per certificate: the visitor's browser builds the certificate from `public/certificate/template.pdf` (blank vector template made from the original Illustrator certificate) with `app/certificates/generator.ts` — a JPEG preview on screen and a PDF on download. Each certificate carries a QR code with its own permanent link, `https://eenstitu.com/sertifika/<token>` (random 16-character token per participant, created once in the D1 table `certificate_links` and never changed). Anyone with the QR code or link sees that one certificate (image + PDF download); the link works while generation is on and the participant is still listed, and re-adding a removed participant restores the same link. Admins can copy each link with **Linki kopyala**. Fonts are open-license substitutes (see `public/certificate/fonts/README.txt`); layout coordinates are in points measured on the original.
+**PDF:** nothing is stored per certificate. `GET /sertifika/<token>` returns the PDF (`?indir=1` for download; noindex, disallowed in robots.txt). The worker reads `public/certificate/base.pdf` through the `ASSETS` binding and appends a small incremental update with the name, text, date, serial and QR code (`worker/certificate-pdf.ts`). The token is a random 16-character value per participant, created once in the D1 table `certificate_links` and never changed, so the QR code on a downloaded PDF keeps opening the certificate. The link stops working if the participant is removed from the list; re-adding them restores the same link.
 
-### Uploaded PDFs (legacy, no admin UI)
-
-The worker still serves PDFs uploaded earlier through `/api/admin/certificates` (KV namespace `eenstitu-certificates`, binding `CERTIFICATES`, D1 table `certificate_files`); an uploaded PDF takes precedence over the generated certificate. The upload screens were removed from `/admin`.
+**Template:** `certificate-assets/template.pdf` is the blank vector template made from the original certificate; fonts are open-license substitutes (`certificate-assets/fonts/README.txt`). After changing the template or fonts, run `python3 certificate-assets/build_base.py` (needs `pikepdf` and `fonttools`) to rebuild `public/certificate/base.pdf` and `worker/certificate-base.json`.
 
 ## Backups
 

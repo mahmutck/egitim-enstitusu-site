@@ -2,12 +2,11 @@
 // Shared by the worker (validation), the admin page and the public verification page.
 
 export type CertificateSettings = {
-  enabled: boolean;
   /** Turkish body text, up to three lines. */
   tr: string[];
   /** English body text, up to three lines. */
   en: string[];
-  /** Date printed under "Date/Tarih", e.g. 14-06-2026. */
+  /** Date printed under "Date/Tarih", e.g. 14-06-2026. Empty: the training end date. */
   date: string;
   /** Prefix for automatically assigned serial numbers, e.g. HS-ON-. */
   serialPrefix: string;
@@ -15,13 +14,14 @@ export type CertificateSettings = {
   nextSerial: number;
   /** Serial number per participant (keyed by the participant line exactly as stored). */
   serials: Record<string, string>;
+  /** Name printed on the certificate when it differs from the list (spelling fixes keep the QR link). */
+  names: Record<string, string>;
 };
 
 export const MAX_LINES = 3;
 export const MAX_LINE_LENGTH = 140;
 
 export const DEFAULT_CERTIFICATE_SETTINGS: CertificateSettings = {
-  enabled: false,
   tr: [
     "{tarih} tarihinde gerçekleştirilen",
     "Hipnosomatik egzersizleri teorik eğitimini başarı ile tamamlayarak,",
@@ -36,6 +36,7 @@ export const DEFAULT_CERTIFICATE_SETTINGS: CertificateSettings = {
   serialPrefix: "HS-ON-",
   nextSerial: 1,
   serials: {},
+  names: {},
 };
 
 function text(value: unknown, max: number) {
@@ -51,22 +52,25 @@ function lines(value: unknown) {
 export function sanitizeCertificateSettings(input: unknown, participants?: string[]): CertificateSettings {
   const source = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
   const allowed = participants ? new Set(participants) : null;
-  const serials: Record<string, string> = {};
-  if (source.serials && typeof source.serials === "object") {
-    for (const [name, serial] of Object.entries(source.serials as Record<string, unknown>)) {
-      const clean = text(serial, 40);
-      if (clean && (!allowed || allowed.has(name))) serials[name] = clean;
+  const perParticipant = (value: unknown, max: number) => {
+    const result: Record<string, string> = {};
+    if (value && typeof value === "object") {
+      for (const [name, entry] of Object.entries(value as Record<string, unknown>)) {
+        const clean = text(entry, max);
+        if (clean && (!allowed || allowed.has(name))) result[name] = clean;
+      }
     }
-  }
+    return result;
+  };
   const next = Number(source.nextSerial);
   return {
-    enabled: source.enabled === true,
     tr: lines(source.tr),
     en: lines(source.en),
     date: text(source.date, 40),
     serialPrefix: text(source.serialPrefix, 20),
     nextSerial: Number.isFinite(next) && next >= 0 ? Math.min(Math.floor(next), 999999999) : 1,
-    serials,
+    serials: perParticipant(source.serials, 40),
+    names: perParticipant(source.names, 120),
   };
 }
 

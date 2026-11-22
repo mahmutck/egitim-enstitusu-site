@@ -1,19 +1,13 @@
 /** Cloudflare Worker entry point for the vinext-starter template. */
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
-import { applyTrainingRange, CertificateSettings, formatTrainingRange, isIsoDate, parseCertificateSettings, sanitizeCertificateSettings } from "../app/certificates/settings";
+import { applyTrainingRange, DEFAULT_CERTIFICATE_SETTINGS, formatTrainingRange, isIsoDate, parseCertificateSettings, sanitizeCertificateSettings } from "../app/certificates/settings";
+import { BASE_PDF_PATH, buildCertificatePdf } from "./certificate-pdf";
 import { certificateKey } from "../app/certificates/key";
-
-interface CertificateStore {
-  get(key: string, options: { type: "stream" }): Promise<ReadableStream | null>;
-  put(key: string, value: ArrayBuffer, options?: { metadata?: Record<string, unknown> }): Promise<void>;
-  delete(key: string): Promise<void>;
-}
 
 interface Env {
   ASSETS: Fetcher;
   DB: D1Database;
-  CERTIFICATES?: CertificateStore;
   RESEND_API_KEY?: string;
   SESSION_SECRET?: string;
   BOOTSTRAP_PASSWORD_HASH?: string;
@@ -96,7 +90,6 @@ async function ensureAdminDb(env: Env) {
     env.DB.prepare("CREATE TABLE IF NOT EXISTS certificate_links (token TEXT PRIMARY KEY, slug TEXT NOT NULL, name_key TEXT NOT NULL, display_name TEXT NOT NULL, created_at INTEGER NOT NULL, UNIQUE (slug, name_key))"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS training_dates (slug TEXT PRIMARY KEY, start_date TEXT NOT NULL, end_date TEXT NOT NULL, updated_at INTEGER NOT NULL)"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS certificate_settings (slug TEXT PRIMARY KEY, settings_json TEXT NOT NULL, updated_at INTEGER NOT NULL)"),
-    env.DB.prepare("CREATE TABLE IF NOT EXISTS certificate_files (slug TEXT NOT NULL, name_key TEXT NOT NULL, display_name TEXT NOT NULL, original_name TEXT, pdf_size INTEGER NOT NULL, has_preview INTEGER NOT NULL DEFAULT 0, version TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (slug, name_key))"),
   ]);
   for (const [slug, title, subtitle, graduates] of seedRecords) await env.DB.prepare("INSERT OR IGNORE INTO verification_records (slug,title,subtitle,graduates_json,created_at,updated_at) VALUES (?,?,?,?,?,?)").bind(slug, title, subtitle, JSON.stringify(graduates), now, now).run();
   if (env.BOOTSTRAP_PASSWORD_HASH) for (const email of ADMIN_EMAILS) await env.DB.prepare("INSERT OR IGNORE INTO admin_credentials (email,password_hash,updated_at) VALUES (?,?,?)").bind(email, env.BOOTSTRAP_PASSWORD_HASH, now).run();
@@ -233,18 +226,15 @@ async function handleAdminRecords(request:Request, env:Env) {
   const email=await authenticatedEmail(request,env); if(!email) return jsonError("Oturum gerekli.",401);
   if(request.method==="GET") {
     const rows=await env.DB.prepare("SELECT v.slug,v.title,v.subtitle,v.graduates_json,v.note,v.certificate_url,v.certificate_label,v.created_at,v.updated_at,t.start_date AS training_start,t.end_date AS training_end FROM verification_records v LEFT JOIN training_dates t ON t.slug=v.slug ORDER BY v.updated_at DESC").all<Record<string,unknown>>();
-    const files=await env.DB.prepare("SELECT slug,name_key,original_name,pdf_size,has_preview,version FROM certificate_files").all<CertificateRow>();
-    const bySlug=new Map<string,CertificateRow[]>();
-    for(const row of files.results) bySlug.set(row.slug,[...(bySlug.get(row.slug)||[]),row]);
     const settings=await env.DB.prepare("SELECT slug,settings_json FROM certificate_settings").all<{slug:string;settings_json:string}>();
     const settingsBySlug=new Map(settings.results.map(row=>[row.slug,row.settings_json]));
     const links=new Map<string,Record<string,string>>();
     for(const record of rows.results) links.set(String(record.slug),await ensureCertificateLinks(env,String(record.slug),parseGraduates(String(record.graduates_json||"[]"))));
     const records=rows.results.map(record=>{
       const slug=String(record.slug); const graduatesJson=String(record.graduates_json||"[]"); const graduates=parseGraduates(graduatesJson);
-      return {...record,certificate_links:links.get(slug)||{},training_range:formatTrainingRange(record.training_start as string|null,record.training_end as string|null),certificates:certificatesFor(slug,graduatesJson,bySlug.get(slug)||[]),certificate_settings:parseCertificateSettings(settingsBySlug.get(slug),graduates),participant_keys:Object.fromEntries(graduates.map(name=>[name,certificateKey(name)]))};
+      return {...record,certificate_links:links.get(slug)||{},training_range:formatTrainingRange(record.training_start as string|null,record.training_end as string|null),certificate_settings:parseCertificateSettings(settingsBySlug.get(slug),graduates)};
     });
-    return Response.json({ok:true,records,storageReady:Boolean(env.CERTIFICATES)});
+    return Response.json({ok:true,records});
   }
   if(!validOrigin(request)) return jsonError("Geçersiz istek kaynağı.",403);
   const data=await request.json().catch(()=>null) as {record?:Record<string,unknown>}|null; const r=data?.record||{}; const title=String(r.title||"").trim().slice(0,180); const rawSlug=String(r.slug||"").trim(); const slug=slugify(rawSlug||title); const graduates=Array.isArray(r.graduates)?r.graduates.map(x=>String(x).trim()).filter(Boolean).slice(0,500):[];
@@ -266,38 +256,13 @@ async function handleVerification(request:Request, env:Env) {
   if(!row) return jsonError("Kayıt bulunamadı.",404);
   const record={...row,training_range:formatTrainingRange(row.training_start as string|null,row.training_end as string|null)};
   // Certificates are visible to the administrators only; everyone else gets the participant list.
-  if(!await authenticatedEmail(request,env)) return Response.json({ok:true,record:{...record,admin:false,generated:null,certificates:{}}},{headers:{"Cache-Control":"private, no-store"}});
-  const files=await env.DB.prepare("SELECT slug,name_key,original_name,pdf_size,has_preview,version FROM certificate_files WHERE slug=?").bind(String(record.slug)).all<CertificateRow>();
-  const settingsRow=await env.DB.prepare("SELECT settings_json FROM certificate_settings WHERE slug=?").bind(String(record.slug)).first<{settings_json:string}>();
-  const graduatesJson=String(record.graduates_json||"[]");
-  const settings=parseCertificateSettings(settingsRow?.settings_json,parseGraduates(graduatesJson));
-  const generated=settings?.enabled?{tr:settings.tr,en:settings.en,date:settings.date}:null;
-  const links=await ensureCertificateLinks(env,String(record.slug),parseGraduates(graduatesJson));
-  return Response.json({ok:true,record:{...record,admin:true,generated,certificates:certificatesFor(String(record.slug),graduatesJson,files.results,settings,links)}},{headers:{"Cache-Control":"private, no-store"}});
+  if(!await authenticatedEmail(request,env)) return Response.json({ok:true,record:{...record,admin:false,certificates:{}}},{headers:{"Cache-Control":"private, no-store"}});
+  const graduates=parseGraduates(String(record.graduates_json||"[]"));
+  const links=await ensureCertificateLinks(env,String(record.slug),graduates);
+  return Response.json({ok:true,record:{...record,admin:true,certificates:Object.fromEntries(Object.entries(links).map(([name,token])=>[name,{token,url:`/sertifika/${token}`}]))}},{headers:{"Cache-Control":"private, no-store"}});
 }
 
-// Participant certificates: PDF + optional JPEG preview in KV, current version in D1.
-type CertificateRow={slug:string;name_key:string;original_name:string|null;pdf_size:number;has_preview:number;version:string};
-const MAX_CERTIFICATE_PDF=24*1024*1024;
-const MAX_CERTIFICATE_PREVIEW=4*1024*1024;
-
-function certificateStorageKey(slug:string, key:string, version:string, ext:"pdf"|"jpg") { return `certificates/${slug}/${key}/${version}.${ext}`; }
-function certificateUrl(slug:string, key:string, version:string, ext:"pdf"|"jpg") { return `/sertifika/${encodeURIComponent(slug)}/${key}.${ext}?v=${version}`; }
 function parseGraduates(json:string) { try { const list=JSON.parse(json); return Array.isArray(list)?list.map(item=>String(item)):[]; } catch { return []; } }
-
-type CertificateEntry={key:string;pdf:string;preview:string|null;size:number;originalName:string|null}|{key:string;generated:true;serial:string;token:string};
-
-/** Uploaded PDFs win; with generation enabled every other participant gets a generated certificate. */
-function certificatesFor(slug:string, graduatesJson:string, rows:CertificateRow[], settings?:CertificateSettings|null, links:Record<string,string>={}) {
-  const byKey=new Map(rows.map(row=>[row.name_key,row]));
-  const result:Record<string,CertificateEntry>={};
-  for(const name of parseGraduates(graduatesJson)) {
-    const key=certificateKey(name); const row=byKey.get(key);
-    if(row) result[name]={key,pdf:certificateUrl(slug,key,row.version,"pdf"),preview:row.has_preview?certificateUrl(slug,key,row.version,"jpg"):null,size:row.pdf_size,originalName:row.original_name};
-    else if(settings?.enabled) result[name]={key,generated:true,serial:settings.serials[name]||"",token:links[name]||""};
-  }
-  return result;
-}
 
 // Permanent, unguessable link per participant (QR code target). Created once; never changed or reused.
 const CERTIFICATE_LINK_ORIGIN="https://eenstitu.com";
@@ -315,24 +280,51 @@ async function ensureCertificateLinks(env:Env, slug:string, graduates:string[]) 
   return Object.fromEntries(graduates.map(name=>[name,byKey.get(certificateKey(name))||""]).filter(([,token])=>token));
 }
 
-/** Public: the certificate behind a QR link. Works only while generation is on and the participant is still listed. */
-async function handlePublicCertificate(request:Request, env:Env) {
-  const headers={"Cache-Control":"private, no-store","X-Robots-Tag":"noindex, nofollow"};
-  const notFound=()=>Response.json({ok:false,message:"Sertifika bulunamadı."},{status:404,headers});
-  const token=new URL(request.url).searchParams.get("token")||"";
-  if(!/^[A-Za-z0-9_-]{16,64}$/.test(token)) return notFound();
+function certificateDate(isoDate:string|null) {
+  if(!isoDate || !isIsoDate(isoDate)) return "";
+  const [y,m,d]=isoDate.split("-"); return `${d}-${m}-${y}`;
+}
+
+/** Certificate contents for a permanent link token, or null when the link is unknown or the participant was removed. */
+async function resolveCertificate(env:Env, token:string) {
+  if(!/^[A-Za-z0-9_-]{16,64}$/.test(token)) return null;
   await ensureAdminDb(env);
   const link=await env.DB.prepare("SELECT slug,name_key FROM certificate_links WHERE token=?").bind(token).first<{slug:string;name_key:string}>();
-  if(!link) return notFound();
-  const record=await env.DB.prepare("SELECT v.slug,v.title,v.graduates_json,t.start_date AS training_start,t.end_date AS training_end FROM verification_records v LEFT JOIN training_dates t ON t.slug=v.slug WHERE v.slug=?").bind(link.slug).first<{slug:string;title:string;graduates_json:string;training_start:string|null;training_end:string|null}>();
-  if(!record) return notFound();
+  if(!link) return null;
+  const record=await env.DB.prepare("SELECT v.slug,v.graduates_json,t.start_date AS training_start,t.end_date AS training_end FROM verification_records v LEFT JOIN training_dates t ON t.slug=v.slug WHERE v.slug=?").bind(link.slug).first<{slug:string;graduates_json:string;training_start:string|null;training_end:string|null}>();
+  if(!record) return null;
   const graduates=parseGraduates(record.graduates_json);
-  const name=graduates.find(item=>certificateKey(item)===link.name_key);
+  const listed=graduates.find(item=>certificateKey(item)===link.name_key);
+  if(!listed) return null;
   const settingsRow=await env.DB.prepare("SELECT settings_json FROM certificate_settings WHERE slug=?").bind(link.slug).first<{settings_json:string}>();
-  const settings=parseCertificateSettings(settingsRow?.settings_json,graduates);
-  if(!name || !settings?.enabled) return notFound();
+  const settings=parseCertificateSettings(settingsRow?.settings_json,graduates) ?? DEFAULT_CERTIFICATE_SETTINGS;
   const range=formatTrainingRange(record.training_start,record.training_end);
-  return Response.json({ok:true,certificate:{name,serial:settings.serials[name]||"",date:settings.date,tr:applyTrainingRange(settings.tr,range),en:applyTrainingRange(settings.en,range),url:`${CERTIFICATE_LINK_ORIGIN}/sertifika/${token}`,record:{slug:record.slug,title:record.title}}},{headers});
+  return {
+    name:settings.names[listed]||listed.split(" · ")[0].trim(),
+    serial:settings.serials[listed]||"",
+    date:settings.date||certificateDate(record.training_end||record.training_start),
+    tr:applyTrainingRange(settings.tr,range),
+    en:applyTrainingRange(settings.en,range),
+    url:`${CERTIFICATE_LINK_ORIGIN}/sertifika/${token}`,
+  };
+}
+
+function contentDisposition(type:"inline"|"attachment", filename:string) {
+  const ascii=filename.normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/ı/g,"i").replace(/İ/g,"I").replace(/[^A-Za-z0-9 ._-]/g,"_");
+  return `${type}; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(filename)}`;
+}
+
+/** /sertifika/<token>: the certificate PDF itself (QR code target). ?indir=1 downloads it. */
+async function handleCertificatePdf(request:Request, env:Env, token:string) {
+  if(!["GET","HEAD"].includes(request.method)) return new Response("Method Not Allowed",{status:405,headers:{Allow:"GET, HEAD"}});
+  const certificate=await resolveCertificate(env,token);
+  if(!certificate) return new Response("Sertifika bulunamadı veya artık geçerli değil.",{status:404,headers:{"Content-Type":"text/plain; charset=utf-8","Cache-Control":"no-store"}});
+  const baseResponse=await env.ASSETS.fetch(new Request(new URL(BASE_PDF_PATH,request.url)));
+  if(!baseResponse.ok) return new Response("Sertifika şu anda oluşturulamıyor.",{status:503,headers:{"Content-Type":"text/plain; charset=utf-8"}});
+  const pdf=buildCertificatePdf(await baseResponse.arrayBuffer(),certificate);
+  const disposition=new URL(request.url).searchParams.has("indir")?"attachment":"inline";
+  const headers={"Content-Type":"application/pdf","Content-Disposition":contentDisposition(disposition,`${certificate.name} - Sertifika.pdf`),"Content-Length":String(pdf.size),"Cache-Control":"no-store","X-Robots-Tag":"noindex, nofollow"};
+  return new Response(request.method==="HEAD"?null:pdf,{headers});
 }
 
 async function handleCertificateSettings(request:Request, env:Env) {
@@ -343,91 +335,15 @@ async function handleCertificateSettings(request:Request, env:Env) {
   const record=slug?await env.DB.prepare("SELECT graduates_json FROM verification_records WHERE slug=?").bind(slug).first<{graduates_json:string}>():null;
   if(!record) return jsonError("Kayıt bulunamadı.",404);
   const settings=sanitizeCertificateSettings(data?.settings,parseGraduates(record.graduates_json));
-  if(settings.enabled && (!settings.tr.length || !settings.en.length)) return jsonError("Türkçe ve İngilizce sertifika metni gereklidir.");
+  if(!settings.tr.length || !settings.en.length) return jsonError("Türkçe ve İngilizce sertifika metni gereklidir.");
   await env.DB.prepare("INSERT INTO certificate_settings (slug,settings_json,updated_at) VALUES (?,?,?) ON CONFLICT(slug) DO UPDATE SET settings_json=excluded.settings_json,updated_at=excluded.updated_at").bind(slug,JSON.stringify(settings),Date.now()).run();
   return Response.json({ok:true,settings});
 }
 
-function startsWith(bytes:Uint8Array, signature:number[]) { return signature.every((value,index)=>bytes[index]===value); }
-
-async function graduateInRecord(env:Env, slug:string, name:string) {
-  const record=await env.DB.prepare("SELECT graduates_json FROM verification_records WHERE slug=?").bind(slug).first<{graduates_json:string}>();
-  return Boolean(record && parseGraduates(record.graduates_json).includes(name));
-}
-
-async function deleteStoredCertificate(env:Env, row:CertificateRow) {
-  if(!env.CERTIFICATES) return;
-  await env.CERTIFICATES.delete(certificateStorageKey(row.slug,row.name_key,row.version,"pdf"));
-  if(row.has_preview) await env.CERTIFICATES.delete(certificateStorageKey(row.slug,row.name_key,row.version,"jpg"));
-}
-
-async function handleCertificateUpload(request:Request, env:Env) {
-  const email=await authenticatedEmail(request,env); if(!email) return jsonError("Oturum gerekli.",401);
-  if(!validOrigin(request)) return jsonError("Geçersiz istek kaynağı.",403);
-  if(!env.CERTIFICATES) return jsonError("Sertifika deposu henüz yapılandırılmadı.",503);
-  const form=await request.formData().catch(()=>null);
-  if(!form) return jsonError("Dosya okunamadı.");
-  const slug=String(form.get("slug")||"").trim(); const name=String(form.get("name")||"").trim();
-  const pdf=form.get("pdf"); const preview=form.get("preview");
-  if(!slug || !name || !(pdf instanceof File)) return jsonError("Kayıt, katılımcı ve PDF dosyası gereklidir.");
-  if(!await graduateInRecord(env,slug,name)) return jsonError("Katılımcı bu kayıtta bulunamadı. Listeyi değiştirdiyseniz önce kaydedin.");
-  if(pdf.size===0 || pdf.size>MAX_CERTIFICATE_PDF) return jsonError("PDF en fazla 24 MB olabilir.");
-  const pdfBytes=await pdf.arrayBuffer();
-  if(!startsWith(new Uint8Array(pdfBytes,0,Math.min(5,pdfBytes.byteLength)),[0x25,0x50,0x44,0x46,0x2d])) return jsonError("Yalnızca PDF dosyası yüklenebilir.");
-  let previewBytes:ArrayBuffer|null=null;
-  if(preview instanceof File && preview.size>0) {
-    if(preview.size>MAX_CERTIFICATE_PREVIEW) return jsonError("Önizleme görseli çok büyük.");
-    previewBytes=await preview.arrayBuffer();
-    if(!startsWith(new Uint8Array(previewBytes,0,Math.min(3,previewBytes.byteLength)),[0xff,0xd8,0xff])) return jsonError("Önizleme görseli JPEG olmalıdır.");
-  }
-  const key=certificateKey(name); const version=`${Date.now().toString(36)}${randomToken().slice(0,6)}`.toLowerCase().replace(/[^a-z0-9]/g,"");
-  const previous=await env.DB.prepare("SELECT slug,name_key,original_name,pdf_size,has_preview,version FROM certificate_files WHERE slug=? AND name_key=?").bind(slug,key).first<CertificateRow>();
-  await env.CERTIFICATES.put(certificateStorageKey(slug,key,version,"pdf"),pdfBytes,{metadata:{name,uploadedBy:email}});
-  if(previewBytes) await env.CERTIFICATES.put(certificateStorageKey(slug,key,version,"jpg"),previewBytes,{metadata:{name}});
-  await env.DB.prepare("INSERT INTO certificate_files (slug,name_key,display_name,original_name,pdf_size,has_preview,version,updated_at) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(slug,name_key) DO UPDATE SET display_name=excluded.display_name,original_name=excluded.original_name,pdf_size=excluded.pdf_size,has_preview=excluded.has_preview,version=excluded.version,updated_at=excluded.updated_at").bind(slug,key,name,pdf.name.slice(0,200)||null,pdf.size,previewBytes?1:0,version,Date.now()).run();
-  if(previous && previous.version!==version) await deleteStoredCertificate(env,previous);
-  return Response.json({ok:true,certificate:{key,pdf:certificateUrl(slug,key,version,"pdf"),preview:previewBytes?certificateUrl(slug,key,version,"jpg"):null,size:pdf.size,originalName:pdf.name||null}});
-}
-
-async function handleCertificateDelete(request:Request, env:Env) {
-  const email=await authenticatedEmail(request,env); if(!email) return jsonError("Oturum gerekli.",401);
-  if(!validOrigin(request)) return jsonError("Geçersiz istek kaynağı.",403);
-  const data=await request.json().catch(()=>null) as {slug?:string;name?:string}|null;
-  const slug=String(data?.slug||"").trim(); const key=certificateKey(String(data?.name||"").trim());
-  const row=await env.DB.prepare("SELECT slug,name_key,original_name,pdf_size,has_preview,version FROM certificate_files WHERE slug=? AND name_key=?").bind(slug,key).first<CertificateRow>();
-  if(!row) return jsonError("Sertifika bulunamadı.",404);
-  await env.DB.prepare("DELETE FROM certificate_files WHERE slug=? AND name_key=?").bind(slug,key).run();
-  await deleteStoredCertificate(env,row);
-  return Response.json({ok:true});
-}
-
-function contentDisposition(type:"inline"|"attachment", filename:string) {
-  const ascii=filename.normalize("NFD").replace(/[̀-ͯ]/g,"").replace(/ı/g,"i").replace(/İ/g,"I").replace(/[^A-Za-z0-9 ._-]/g,"_");
-  return `${type}; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(filename)}`;
-}
-
-async function serveCertificateFile(request:Request, env:Env, slug:string, key:string, ext:"pdf"|"jpg") {
-  if(!["GET","HEAD"].includes(request.method)) return new Response("Method Not Allowed",{status:405,headers:{Allow:"GET, HEAD"}});
-  if(!await authenticatedEmail(request,env)) return new Response("Sertifika bulunamadı.",{status:404,headers:{"Content-Type":"text/plain; charset=utf-8"}});
-  const row=await env.DB.prepare("SELECT slug,name_key,display_name,has_preview,version FROM certificate_files WHERE slug=? AND name_key=?").bind(slug,key).first<CertificateRow & {display_name:string}>();
-  if(!row || !env.CERTIFICATES || (ext==="jpg" && !row.has_preview)) return new Response("Sertifika bulunamadı.",{status:404,headers:{"Content-Type":"text/plain; charset=utf-8"}});
-  const body=await env.CERTIFICATES.get(certificateStorageKey(slug,key,row.version,ext),{type:"stream"});
-  if(!body) return new Response("Sertifika bulunamadı.",{status:404,headers:{"Content-Type":"text/plain; charset=utf-8"}});
-  const url=new URL(request.url); const current=url.searchParams.get("v")===row.version;
-  const headers=new Headers({
-    "Content-Type": ext==="pdf" ? "application/pdf" : "image/jpeg",
-    "Cache-Control": current ? "private, max-age=86400" : "private, no-store",
-    "X-Robots-Tag": "noindex, nofollow",
-  });
-  if(ext==="pdf") headers.set("Content-Disposition",contentDisposition(url.searchParams.has("indir")?"attachment":"inline",`${row.display_name.split(" · ")[0]} - Sertifika.pdf`));
-  if(request.method==="HEAD") { await body.cancel(); return new Response(null,{headers}); }
-  return new Response(body,{headers});
-}
-
-function withSecurityHeaders(response: Response, allowSameOriginFrame = false) {
+function withSecurityHeaders(response: Response) {
   const headers = new Headers(response.headers);
   headers.set("X-Content-Type-Options", "nosniff");
-  headers.set("X-Frame-Options", allowSameOriginFrame ? "SAMEORIGIN" : "DENY");
+  headers.set("X-Frame-Options", "DENY");
   headers.set("Referrer-Policy", "strict-origin-when-cross-origin");
   headers.set("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
   headers.set("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
@@ -479,7 +395,7 @@ function sitemapXml() {
 const worker = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
-    const certificateFileMatch = url.pathname.match(/^\/sertifika\/([^/]+)\/([a-z0-9-]+)\.(pdf|jpg)$/);
+    const certificateMatch = url.pathname.match(/^\/sertifika\/([A-Za-z0-9_-]{16,64})$/);
     let response: Response;
 
     if (url.hostname === "www.eenstitu.com" || (url.hostname === "eenstitu.com" && url.protocol === "http:")) {
@@ -507,18 +423,10 @@ const worker = {
       response = ["GET", "POST"].includes(request.method) ? await handleAdminRecords(request, env) : new Response("Method Not Allowed", { status: 405, headers:{Allow:"GET, POST"} });
     } else if (url.pathname === "/api/verification") {
       response = request.method === "GET" ? await handleVerification(request, env) : new Response("Method Not Allowed", { status: 405, headers:{Allow:"GET"} });
-    } else if (url.pathname === "/api/certificate") {
-      response = request.method === "GET" ? await handlePublicCertificate(request, env) : new Response("Method Not Allowed", { status: 405, headers:{Allow:"GET"} });
+    } else if (certificateMatch) {
+      response = await handleCertificatePdf(request, env, certificateMatch[1]);
     } else if (url.pathname === "/api/admin/certificate-settings") {
       response = request.method === "POST" ? await handleCertificateSettings(request, env) : new Response("Method Not Allowed", { status: 405, headers:{Allow:"POST"} });
-    } else if (url.pathname === "/api/admin/certificates") {
-      response = request.method === "POST" ? await handleCertificateUpload(request, env)
-        : request.method === "DELETE" ? await handleCertificateDelete(request, env)
-        : new Response("Method Not Allowed", { status: 405, headers:{Allow:"POST, DELETE"} });
-    } else if (certificateFileMatch) {
-      let slug = certificateFileMatch[1];
-      try { slug = decodeURIComponent(slug); } catch { /* keep raw */ }
-      response = await serveCertificateFile(request, env, slug, certificateFileMatch[2], certificateFileMatch[3] as "pdf" | "jpg");
     } else if (url.pathname === "/_vinext/image") {
       const allowedWidths = [...DEFAULT_DEVICE_SIZES, ...DEFAULT_IMAGE_SIZES];
       response = await handleImageOptimization(request, {
@@ -532,7 +440,7 @@ const worker = {
       response = await handler.fetch(request, env, ctx);
     }
 
-    return withSecurityHeaders(seoResponse(request, response), Boolean(certificateFileMatch));
+    return withSecurityHeaders(seoResponse(request, response));
   },
 };
 

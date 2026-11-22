@@ -1,16 +1,12 @@
 "use client";
 
-import { ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { certificateKey } from "../certificates/key";
-import { applyTrainingRange, TrainingRange } from "../certificates/settings";
 
-type FileCertificate = { key: string; pdf: string; preview: string | null };
-type GeneratedCertificate = { key: string; generated: true; serial: string; token: string };
-type Certificate = FileCertificate | GeneratedCertificate;
-type GeneratedTemplate = { tr: string[]; en: string[]; date: string };
+type Certificate = { token: string; url: string };
 type RecordData = {
   slug: string;
-  /** True when an administrator is signed in; only then are certificates included. */
+  /** True when an administrator is signed in; only then are certificate links included. */
   admin?: boolean;
   title: string;
   subtitle?: string;
@@ -18,30 +14,13 @@ type RecordData = {
   note?: string;
   certificate_url?: string;
   certificate_label?: string;
-  generated?: GeneratedTemplate | null;
-  training_range?: TrainingRange | null;
   certificates?: Record<string, Certificate>;
 };
-type Viewer = { name: string; certificate: Certificate; image: string | null; error: string };
-
-const isGenerated = (certificate: Certificate): certificate is GeneratedCertificate => "generated" in certificate;
-
-function downloadUrl(pdf: string) {
-  return `${pdf}${pdf.includes("?") ? "&" : "?"}indir=1`;
-}
-
-function displayName(name: string) {
-  return name.split(" · ")[0];
-}
 
 export default function RemoteCertificateRecord({ slug }: { slug: string }) {
   const [record, setRecord] = useState<RecordData | null>(null);
   const [missing, setMissing] = useState(false);
-  const [open, setOpen] = useState<Viewer | null>(null);
-  const [downloading, setDownloading] = useState<string | null>(null);
-  const [downloadError, setDownloadError] = useState("");
   const [highlighted, setHighlighted] = useState("");
-  const dialogRef = useRef<HTMLDialogElement>(null);
 
   useEffect(() => {
     fetch(`/api/verification?slug=${encodeURIComponent(slug)}`)
@@ -50,77 +29,27 @@ export default function RemoteCertificateRecord({ slug }: { slug: string }) {
       .catch(() => setMissing(true));
   }, [slug]);
 
-  const inputFor = useCallback(async (name: string, certificate: GeneratedCertificate) => {
-    const { certificateLink } = await import("../certificates/generator");
-    const template = record?.generated;
-    return { name, serial: certificate.serial, date: template?.date || "", tr: applyTrainingRange(template?.tr || [], record?.training_range), en: applyTrainingRange(template?.en || [], record?.training_range), url: certificateLink(certificate.token) };
-  }, [record, slug]);
-
-  const show = useCallback((name: string, certificate: Certificate) => {
-    setOpen({ name, certificate, image: isGenerated(certificate) ? null : certificate.preview, error: "" });
-    history.replaceState(null, "", `#${certificate.key}`);
-    if (!isGenerated(certificate)) return;
-    (async () => {
-      const { renderCertificateImage } = await import("../certificates/generator");
-      const blob = await renderCertificateImage(await inputFor(name, certificate));
-      const image = URL.createObjectURL(blob);
-      setOpen((current) => (current?.certificate.key === certificate.key ? { ...current, image } : (URL.revokeObjectURL(image), current)));
-    })().catch(() => setOpen((current) => (current ? { ...current, error: "Sertifika görüntülenemedi. Lütfen sayfayı yenileyip tekrar deneyin." } : current)));
-  }, [inputFor]);
-
-  const download = useCallback(async (name: string, certificate: GeneratedCertificate) => {
-    setDownloading(certificate.key);
-    setDownloadError("");
-    try {
-      const { buildCertificatePdf, certificateFileName, downloadBlob } = await import("../certificates/generator");
-      downloadBlob(await buildCertificatePdf(await inputFor(name, certificate)), certificateFileName(name));
-    } catch {
-      setDownloadError("PDF hazırlanamadı. Lütfen tekrar deneyin.");
-    } finally {
-      setDownloading(null);
-    }
-  }, [inputFor]);
-
-  const close = useCallback(() => dialogRef.current?.close(), []);
-
-  useEffect(() => {
-    const dialog = dialogRef.current;
-    if (open && dialog && !dialog.open) dialog.showModal();
-  }, [open]);
-
-  // QR code link: /<kayit>#ad-soyad highlights the participant; administrators also get the certificate opened.
+  // /<kayit>#ad-soyad highlights that participant as registered.
   useEffect(() => {
     if (!record) return;
-    const certificates = record.certificates || {};
     const graduates = JSON.parse(record.graduates_json || "[]") as string[];
-    const openFromHash = () => {
+    const highlight = () => {
       const key = decodeURIComponent(location.hash.slice(1));
       const name = key ? graduates.find((item) => certificateKey(item) === key) : undefined;
       if (!name) return;
       setHighlighted(name);
       requestAnimationFrame(() => document.getElementById(`katilimci-${key}`)?.scrollIntoView({ block: "center", behavior: "smooth" }));
-      if (certificates[name]) show(name, certificates[name]);
     };
-    openFromHash();
-    window.addEventListener("hashchange", openFromHash);
-    return () => window.removeEventListener("hashchange", openFromHash);
-  }, [record, show]);
+    highlight();
+    window.addEventListener("hashchange", highlight);
+    return () => window.removeEventListener("hashchange", highlight);
+  }, [record]);
 
   if (missing) return <section className="certificate-content"><p className="certificate-note">Bu sertifika doğrulama kaydı bulunamadı.</p></section>;
   if (!record) return <section className="certificate-content"><p className="certificate-note">Doğrulama kaydı yükleniyor…</p></section>;
 
   const graduates = JSON.parse(record.graduates_json || "[]") as string[];
   const certificates = record.certificates || {};
-  const withCertificates = graduates.filter((name) => certificates[name]).length;
-
-  const downloadControl = (name: string, certificate: Certificate, className: string, label: ReactNode) =>
-    isGenerated(certificate) ? (
-      <button type="button" className={className} onClick={() => download(name, certificate)} disabled={downloading === certificate.key} aria-label={`${displayName(name)} sertifikasını PDF olarak indir`}>
-        {downloading === certificate.key ? "Hazırlanıyor…" : label}
-      </button>
-    ) : (
-      <a className={className} href={downloadUrl(certificate.pdf)} download aria-label={`${displayName(name)} sertifikasını PDF olarak indir`}>{label}</a>
-    );
 
   return (
     <>
@@ -136,9 +65,7 @@ export default function RemoteCertificateRecord({ slug }: { slug: string }) {
               <span>Başarı Kaydı</span>
               <b>{graduates.length} katılımcı</b>
             </div>
-            {record.admin && <p className="graduate-admin-note">Yönetici görünümü: sertifikaları yalnızca yöneticiler görür; ziyaretçiler sadece isim listesini görür.</p>}
-            {withCertificates > 0 && <p className="graduate-hint">Sertifikayı görmek için katılımcının adına dokunun.</p>}
-            {downloadError && <p className="graduate-hint graduate-error" role="alert">{downloadError}</p>}
+            {record.admin && <p className="graduate-admin-note">Yönetici görünümü: sertifika bağlantılarını yalnızca yöneticiler görür; ziyaretçiler sadece isim listesini görür.</p>}
             <ol className="graduate-list">
               {graduates.map((name) => {
                 const certificate = certificates[name];
@@ -146,8 +73,8 @@ export default function RemoteCertificateRecord({ slug }: { slug: string }) {
                   <li key={name} id={`katilimci-${certificateKey(name)}`} className={highlighted === name ? "is-highlighted" : undefined}>
                     {certificate ? (
                       <>
-                        <button type="button" className="graduate-name graduate-link" onClick={() => show(name, certificate)} aria-haspopup="dialog">{name}</button>
-                        {downloadControl(name, certificate, "graduate-download", <>PDF <span aria-hidden="true">↓</span></>)}
+                        <a className="graduate-name graduate-link" href={certificate.url} target="_blank" rel="noreferrer">{name}</a>
+                        <a className="graduate-download" href={`${certificate.url}?indir=1`} aria-label={`${name} sertifikasını indir`}>PDF <span aria-hidden="true">↓</span></a>
                       </>
                     ) : (
                       <span className="graduate-name">{name}</span>
@@ -168,39 +95,6 @@ export default function RemoteCertificateRecord({ slug }: { slug: string }) {
           </a>
         )}
       </section>
-
-      <dialog
-        ref={dialogRef}
-        className="certificate-viewer"
-        aria-label={open ? `${displayName(open.name)} sertifikası` : "Sertifika"}
-        onClose={() => {
-          setOpen((current) => { if (current?.image?.startsWith("blob:")) URL.revokeObjectURL(current.image); return null; });
-          history.replaceState(null, "", location.pathname + location.search);
-        }}
-        onClick={(event) => { if (event.target === event.currentTarget) close(); }}
-      >
-        {open && (
-          <div className="certificate-viewer-inner">
-            <header>
-              <div>
-                <span>Sertifika</span>
-                <strong>{displayName(open.name)}</strong>
-              </div>
-              <button type="button" onClick={close} aria-label="Kapat">×</button>
-            </header>
-            <div className="certificate-viewer-body">
-              {open.error ? <p className="certificate-viewer-status">{open.error}</p>
-                : open.image ? <img src={open.image} alt={`${displayName(open.name)} adına düzenlenen sertifika`} />
-                : isGenerated(open.certificate) ? <p className="certificate-viewer-status">Sertifika hazırlanıyor…</p>
-                : <iframe src={`${open.certificate.pdf}#view=FitH`} title={`${displayName(open.name)} sertifikası`} />}
-            </div>
-            <footer>
-              {downloadControl(open.name, open.certificate, "button button-gold", <>PDF indir <span aria-hidden="true">↓</span></>)}
-              {!isGenerated(open.certificate) && <a className="certificate-viewer-open" href={open.certificate.pdf} target="_blank" rel="noreferrer">Yeni sekmede aç ↗</a>}
-            </footer>
-          </div>
-        )}
-      </dialog>
     </>
   );
 }
