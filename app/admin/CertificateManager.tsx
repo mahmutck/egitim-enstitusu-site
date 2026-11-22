@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { displayName } from "./certificate-tools";
-import { CertificateSettings, DEFAULT_CERTIFICATE_SETTINGS, MAX_LINES, TrainingRange, usesTrainingRange } from "../certificates/settings";
+import { CertificateSettings, DEFAULT_CERTIFICATE_SETTINGS, MAX_LINES, participantSerial, TrainingRange, usesTrainingRange } from "../certificates/settings";
 
 export type CertificateRecord = {
   slug: string;
@@ -65,12 +65,6 @@ export default function CertificateManager({ record, onChanged }: { record: Cert
     if (await save({ ...settings, names, serials }, `${certificateName || displayName(editing.name)} için sertifika güncellendi.`)) setEditing(null);
   }
 
-  function assignSerials() {
-    const serials = { ...settings.serials }; let next = settings.nextSerial;
-    for (const name of graduates) if (!serials[name]?.trim()) serials[name] = `${settings.serialPrefix}${next++}`;
-    setSettings({ ...settings, serials, nextSerial: next });
-  }
-
   async function copyLink(name: string) {
     const url = `https://eenstitu.com${certificateUrl(links[name])}`;
     try { await navigator.clipboard.writeText(url); setMessage(`Link kopyalandı: ${url}`); } catch { setMessage(`Sertifika linki: ${url}`); }
@@ -98,22 +92,23 @@ export default function CertificateManager({ record, onChanged }: { record: Cert
           const token = links[name];
           const shownName = settings.names[name] || displayName(name);
           const isEditing = editing?.name === name;
+          const serial = participantSerial(settings, name);
           return (
             <li key={name} className={isEditing ? "is-editing" : undefined}>
               <span className="cert-no">{String(index + 1).padStart(2, "0")}</span>
               <div className="cert-person">
                 <b>{shownName}</b>
-                <small>{settings.serials[name] ? `Seri no: ${settings.serials[name]}` : "Seri no yok"}{shownName !== displayName(name) ? ` · Listede: ${name}` : ""}</small>
+                <small>{serial ? `Seri no: ${serial}` : "Seri no kaydedilince verilir"}{shownName !== displayName(name) ? ` · Listede: ${name}` : ""}</small>
               </div>
               <div className="cert-actions">
                 {token ? <a href={certificateUrl(token)} target="_blank" rel="noreferrer">Görüntüle</a> : <span>Görüntüle</span>}
                 {token ? <a href={`${certificateUrl(token)}?indir=1`}>İndir</a> : <span>İndir</span>}
-                <button type="button" onClick={() => setEditing(isEditing ? null : { name, certificateName: shownName, serial: settings.serials[name] || "" })} aria-expanded={isEditing}>Düzenle</button>
+                <button type="button" onClick={() => setEditing(isEditing ? null : { name, certificateName: shownName, serial })} aria-expanded={isEditing}>Düzenle</button>
               </div>
               {isEditing && editing && (
                 <div className="cert-edit">
                   <label>Sertifikadaki ad<input value={editing.certificateName} onChange={(event) => setEditing({ ...editing, certificateName: event.target.value })} /></label>
-                  <label>Seri no<input value={editing.serial} onChange={(event) => setEditing({ ...editing, serial: event.target.value })} placeholder={`${settings.serialPrefix}${settings.nextSerial}`} /></label>
+                  <label>Seri no<input value={editing.serial} onChange={(event) => setEditing({ ...editing, serial: event.target.value })} placeholder="Boş bırakılırsa sıradaki numara verilir" /></label>
                   <div className="cert-edit-actions">
                     <button type="button" className="button button-gold" onClick={saveParticipant} disabled={busy}>{busy ? "Kaydediliyor…" : "Kaydet"}</button>
                     <button type="button" className="admin-forgot" onClick={() => setEditing(null)}>Vazgeç</button>
@@ -138,7 +133,7 @@ export default function CertificateManager({ record, onChanged }: { record: Cert
             <textarea rows={3} value={settings.en.join("\n")} onChange={(event) => setSettings({ ...settings, en: event.target.value.split("\n").slice(0, MAX_LINES) })} />
           </label>
           <label>Tarih <small>Boş bırakılırsa eğitimin bitiş tarihi</small><input value={settings.date} onChange={(event) => setSettings({ ...settings, date: event.target.value })} placeholder="14-06-2026" /></label>
-          <label>Seri no öneki ve sıradaki numara
+          <label>Seri no öneki ve sıradaki numara <small>Numaralar otomatik verilir; yeni eklenen katılımcılar buradan devam eder</small>
             <span className="certificate-serial-start">
               <input value={settings.serialPrefix} onChange={(event) => setSettings({ ...settings, serialPrefix: event.target.value })} placeholder="HS-ON-" aria-label="Seri no öneki" />
               <input type="number" min={0} value={settings.nextSerial} onChange={(event) => setSettings({ ...settings, nextSerial: Number(event.target.value) || 0 })} aria-label="Sıradaki numara" />
@@ -147,7 +142,6 @@ export default function CertificateManager({ record, onChanged }: { record: Cert
         </div>
         <div className="certificate-template-actions">
           <button type="button" className="button button-gold" onClick={() => save(settings, "Sertifika ayarları kaydedildi.")} disabled={busy}>{busy ? "Kaydediliyor…" : "Ayarları kaydet"}</button>
-          <button type="button" className="admin-forgot" onClick={assignSerials} disabled={busy}>Boş seri numaralarını doldur</button>
         </div>
       </details>
     </section>

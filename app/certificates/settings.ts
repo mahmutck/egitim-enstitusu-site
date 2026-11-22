@@ -79,6 +79,53 @@ export function parseCertificateSettings(json: string | null | undefined, partic
   try { return sanitizeCertificateSettings(JSON.parse(json), participants); } catch { return null; }
 }
 
+// Serial numbers. Issued certificates follow "group number + position in the list":
+// HS-ON-1910 is the 10th participant of group 19 (record hipnosomatik-00019).
+
+/** Serial written in the participant line itself, e.g. "Banu Acar · Sertifika No: IS-11-025". */
+export function listedSerial(line: string) {
+  const match = line.match(/(?:sertifika|seri|serial)\s*(?:no|numarası|number)\s*[:：]\s*([^\s·,;]+)/i);
+  return match ? match[1].slice(0, 40) : "";
+}
+
+/** Serial printed for a participant: a manual entry, else the one written in the list. */
+export function participantSerial(settings: Pick<CertificateSettings, "serials">, line: string) {
+  return settings.serials[line] || listedSerial(line);
+}
+
+/** Group number of a record: "21. Grup …" / "Grup 21" in the title, else the first number in its address (hipnosomatik-00019 → 19). */
+export function recordGroupNumber(slug: string, title = "") {
+  const inTitle = title.match(/(\d{1,3})\s*\.\s*grup|grup\s*(\d{1,3})/i);
+  if (inTitle) return Number(inTitle[1] || inTitle[2]);
+  for (const match of slug.matchAll(/\d+/g)) {
+    const value = Number(match[0]);
+    if (value >= 1 && value <= 999) return value;
+  }
+  return null;
+}
+
+/** First automatic number of a group: group 19 → 1901. Without a group number: 1. */
+export function firstSerialOfGroup(group: number | null) {
+  return group ? group * 100 + 1 : 1;
+}
+
+/**
+ * Gives every listed participant without a serial number the next number, in list order, so every
+ * certificate carries one. Numbers already given are never changed; new participants continue the count.
+ */
+export function assignMissingSerials(settings: CertificateSettings, participants: string[], group: number | null) {
+  const serials = { ...settings.serials };
+  const nothingAssignedYet = Object.keys(settings.serials).length === 0 && settings.nextSerial <= 1;
+  let next = nothingAssignedYet ? firstSerialOfGroup(group) : settings.nextSerial;
+  let changed = false;
+  for (const name of participants) {
+    if (serials[name] || listedSerial(name)) continue;
+    serials[name] = `${settings.serialPrefix}${next++}`;
+    changed = true;
+  }
+  return { settings: changed ? { ...settings, serials, nextSerial: next } : settings, changed };
+}
+
 // Training date range (stored per record as YYYY-MM-DD) and its use in certificate text.
 const TR_MONTHS = ["Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran", "Temmuz", "Ağustos", "Eylül", "Ekim", "Kasım", "Aralık"];
 const EN_MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];

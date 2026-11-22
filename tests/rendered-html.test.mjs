@@ -173,7 +173,10 @@ test("certificate settings: validation, serials and name overrides", async () =>
   const saved = (await (await send("/api/admin/certificate-settings", json({ slug, settings }, cookie))).json()).settings;
   assert.deepEqual(saved.tr, ["{tarih} tarihinde gerçekleştirilen", "ikinci satır"]);
   assert.equal(saved.en.length, 3, "at most three lines");
-  assert.deepEqual(saved.serials, { "Zeynep Kabaklı": "HS-ON-1910" }, "unknown participants are dropped");
+  assert.equal(saved.serials["Zeynep Kabaklı"], "HS-ON-1910", "manual number kept");
+  assert.equal("Listede Yok" in saved.serials, false, "unknown participants are dropped");
+  assert.equal(Object.keys(saved.serials).length, 18, "everyone else gets a number on save");
+  assert.equal(saved.serials["Alev İlhan Göçmezoğlu"], "HS-ON-1919", "continuing from the next number");
   assert.deepEqual(saved.names, { "Zeynep Kabaklı": "Zeynep Kabaklı Yılmaz" });
   assert.equal("enabled" in saved, false);
 
@@ -186,6 +189,44 @@ test("certificate settings: validation, serials and name overrides", async () =>
   assert.equal(JSON.parse(visitor.graduates_json).length, 18, "visitors still see the participant list");
   const admin = (await (await send(`/api/verification?slug=${slug}`, asAdmin)).json()).record;
   assert.equal(admin.certificates["Zeynep Kabaklı"].url, `/sertifika/${record.certificate_links["Zeynep Kabaklı"]}`);
+  db.close();
+});
+
+test("serial numbers: automatic, group number + list position, never change", async () => {
+  const { db, send, json, cookie, asAdmin } = await adminTestEnv("192.0.2.211");
+  const records = async () => (await (await send("/api/admin/records", asAdmin)).json()).records;
+  const serialsOf = async (slug) => (await records()).find(r => r.slug === slug).certificate_settings.serials;
+
+  const group19 = await serialsOf("hipnosomatik-00019");
+  assert.equal(group19["Alev İlhan Göçmezoğlu"], "HS-ON-1901", "first participant of group 19");
+  assert.equal(group19["Zeynep Kabaklı"], "HS-ON-1910", "matches the issued certificate (10th in the list)");
+  assert.equal(Object.keys(group19).length, 18);
+  assert.equal((await records()).find(r => r.slug === "hipnosomatik-00019").certificate_settings.nextSerial, 1919);
+  assert.deepEqual(await serialsOf("biosomatik11"), {}, "numbers written in the list are used as they are");
+  assert.equal((await serialsOf("21-grup-hipnosomatik"))["Alev İlhan"], "HS-ON-2101");
+
+  // Reordering, adding and removing participants never changes a number that was given.
+  const list19 = JSON.parse((await records()).find(r => r.slug === "hipnosomatik-00019").graduates_json);
+  const save19 = (graduates) => send("/api/admin/records", json({ record: { slug: "hipnosomatik-00019", title: "Hipnosomatik Teorik Eğitimi · 15–22 Mayıs 2026", graduates, trainingStart: "2026-05-15", trainingEnd: "2026-05-22" } }, cookie));
+  await save19(["Yeni Katılımcı", ...list19.filter(name => name !== "Zeynep Kabaklı").reverse()]);
+  let after = await serialsOf("hipnosomatik-00019");
+  assert.equal(after["Yeni Katılımcı"], "HS-ON-1919", "new participants continue the count");
+  assert.equal(after["Alev İlhan Göçmezoğlu"], "HS-ON-1901");
+  await save19([...list19, "Yeni Katılımcı"]);
+  after = await serialsOf("hipnosomatik-00019");
+  assert.equal(after["Zeynep Kabaklı"], "HS-ON-1910", "re-added participant gets the same number back");
+  assert.equal(after["Yeni Katılımcı"], "HS-ON-1919");
+
+  // A cleared number is replaced by the next one; a manual number is kept.
+  const current = (await records()).find(r => r.slug === "hipnosomatik-00019").certificate_settings;
+  const serials = { ...current.serials, "Berna Kartal": "ÖZEL-7" }; delete serials["Ayşe Özdemir"];
+  const saved = (await (await send("/api/admin/certificate-settings", json({ slug: "hipnosomatik-00019", settings: { ...current, serials } }, cookie))).json()).settings;
+  assert.equal(saved.serials["Berna Kartal"], "ÖZEL-7");
+  assert.equal(saved.serials["Ayşe Özdemir"], "HS-ON-1920");
+
+  // New record: group number from the title.
+  await send("/api/admin/records", json({ record: { slug: "yeni-grup", title: "Hipnosomatik 24. Grup", graduates: ["Ali Veli", "Ayşe Fatma"] } }, cookie));
+  assert.deepEqual(await serialsOf("yeni-grup"), { "Ali Veli": "HS-ON-2401", "Ayşe Fatma": "HS-ON-2402" });
   db.close();
 });
 

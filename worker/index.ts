@@ -1,7 +1,7 @@
 /** Cloudflare Worker entry point for the vinext-starter template. */
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
-import { applyTrainingRange, DEFAULT_CERTIFICATE_SETTINGS, formatTrainingRange, isIsoDate, parseCertificateSettings, sanitizeCertificateSettings } from "../app/certificates/settings";
+import { applyTrainingRange, assignMissingSerials, CertificateSettings, DEFAULT_CERTIFICATE_SETTINGS, formatTrainingRange, isIsoDate, parseCertificateSettings, participantSerial, recordGroupNumber, sanitizeCertificateSettings } from "../app/certificates/settings";
 import { BASE_PDF_PATH, buildCertificatePdf } from "./certificate-pdf";
 import { certificateKey } from "../app/certificates/key";
 
@@ -228,12 +228,13 @@ async function handleAdminRecords(request:Request, env:Env) {
     const rows=await env.DB.prepare("SELECT v.slug,v.title,v.subtitle,v.graduates_json,v.note,v.certificate_url,v.certificate_label,v.created_at,v.updated_at,t.start_date AS training_start,t.end_date AS training_end FROM verification_records v LEFT JOIN training_dates t ON t.slug=v.slug ORDER BY v.updated_at DESC").all<Record<string,unknown>>();
     const settings=await env.DB.prepare("SELECT slug,settings_json FROM certificate_settings").all<{slug:string;settings_json:string}>();
     const settingsBySlug=new Map(settings.results.map(row=>[row.slug,row.settings_json]));
-    const links=new Map<string,Record<string,string>>();
-    for(const record of rows.results) links.set(String(record.slug),await ensureCertificateLinks(env,String(record.slug),parseGraduates(String(record.graduates_json||"[]"))));
-    const records=rows.results.map(record=>{
-      const slug=String(record.slug); const graduatesJson=String(record.graduates_json||"[]"); const graduates=parseGraduates(graduatesJson);
-      return {...record,certificate_links:links.get(slug)||{},training_range:formatTrainingRange(record.training_start as string|null,record.training_end as string|null),certificate_settings:parseCertificateSettings(settingsBySlug.get(slug),graduates)};
-    });
+    const records=[];
+    for(const record of rows.results) {
+      const slug=String(record.slug); const graduates=parseGraduates(String(record.graduates_json||"[]"));
+      const certificateLinks=await ensureCertificateLinks(env,slug,graduates);
+      const settings=await certificateSettingsFor(env,slug,String(record.title||""),graduates,settingsBySlug.get(slug));
+      records.push({...record,certificate_links:certificateLinks,training_range:formatTrainingRange(record.training_start as string|null,record.training_end as string|null),certificate_settings:sanitizeCertificateSettings(settings,graduates)});
+    }
     return Response.json({ok:true,records});
   }
   if(!validOrigin(request)) return jsonError("Geçersiz istek kaynağı.",403);
@@ -280,6 +281,20 @@ async function ensureCertificateLinks(env:Env, slug:string, graduates:string[]) 
   return Object.fromEntries(graduates.map(name=>[name,byKey.get(certificateKey(name))||""]).filter(([,token])=>token));
 }
 
+const SAVE_CERTIFICATE_SETTINGS="INSERT INTO certificate_settings (slug,settings_json,updated_at) VALUES (?,?,?) ON CONFLICT(slug) DO UPDATE SET settings_json=excluded.settings_json,updated_at=excluded.updated_at";
+
+/**
+ * Settings of a record with a serial number for every listed participant. Missing numbers are given
+ * automatically (group number + position, e.g. HS-ON-1910) and saved at once, so they never change.
+ * Numbers of participants no longer listed are kept, so re-adding someone restores their number.
+ */
+async function certificateSettingsFor(env:Env, slug:string, title:string, graduates:string[], savedJson?:string|null):Promise<CertificateSettings> {
+  const saved=parseCertificateSettings(savedJson) ?? {...DEFAULT_CERTIFICATE_SETTINGS,serials:{},names:{}};
+  const {settings,changed}=assignMissingSerials(saved,graduates,recordGroupNumber(slug,title));
+  if(changed) await env.DB.prepare(SAVE_CERTIFICATE_SETTINGS).bind(slug,JSON.stringify(settings),Date.now()).run();
+  return settings;
+}
+
 function certificateDate(isoDate:string|null) {
   if(!isoDate || !isIsoDate(isoDate)) return "";
   const [y,m,d]=isoDate.split("-"); return `${d}-${m}-${y}`;
@@ -291,17 +306,17 @@ async function resolveCertificate(env:Env, token:string) {
   await ensureAdminDb(env);
   const link=await env.DB.prepare("SELECT slug,name_key FROM certificate_links WHERE token=?").bind(token).first<{slug:string;name_key:string}>();
   if(!link) return null;
-  const record=await env.DB.prepare("SELECT v.slug,v.graduates_json,t.start_date AS training_start,t.end_date AS training_end FROM verification_records v LEFT JOIN training_dates t ON t.slug=v.slug WHERE v.slug=?").bind(link.slug).first<{slug:string;graduates_json:string;training_start:string|null;training_end:string|null}>();
+  const record=await env.DB.prepare("SELECT v.slug,v.title,v.graduates_json,t.start_date AS training_start,t.end_date AS training_end FROM verification_records v LEFT JOIN training_dates t ON t.slug=v.slug WHERE v.slug=?").bind(link.slug).first<{slug:string;title:string|null;graduates_json:string;training_start:string|null;training_end:string|null}>();
   if(!record) return null;
   const graduates=parseGraduates(record.graduates_json);
   const listed=graduates.find(item=>certificateKey(item)===link.name_key);
   if(!listed) return null;
   const settingsRow=await env.DB.prepare("SELECT settings_json FROM certificate_settings WHERE slug=?").bind(link.slug).first<{settings_json:string}>();
-  const settings=parseCertificateSettings(settingsRow?.settings_json,graduates) ?? DEFAULT_CERTIFICATE_SETTINGS;
+  const settings=await certificateSettingsFor(env,link.slug,record.title||"",graduates,settingsRow?.settings_json);
   const range=formatTrainingRange(record.training_start,record.training_end);
   return {
     name:settings.names[listed]||listed.split(" · ")[0].trim(),
-    serial:settings.serials[listed]||"",
+    serial:participantSerial(settings,listed),
     date:settings.date||certificateDate(record.training_end||record.training_start),
     tr:applyTrainingRange(settings.tr,range),
     en:applyTrainingRange(settings.en,range),
@@ -332,12 +347,19 @@ async function handleCertificateSettings(request:Request, env:Env) {
   if(!validOrigin(request)) return jsonError("Geçersiz istek kaynağı.",403);
   const data=await request.json().catch(()=>null) as {slug?:string;settings?:unknown}|null;
   const slug=String(data?.slug||"").trim();
-  const record=slug?await env.DB.prepare("SELECT graduates_json FROM verification_records WHERE slug=?").bind(slug).first<{graduates_json:string}>():null;
+  const record=slug?await env.DB.prepare("SELECT title,graduates_json FROM verification_records WHERE slug=?").bind(slug).first<{title:string|null;graduates_json:string}>():null;
   if(!record) return jsonError("Kayıt bulunamadı.",404);
-  const settings=sanitizeCertificateSettings(data?.settings,parseGraduates(record.graduates_json));
+  const graduates=parseGraduates(record.graduates_json);
+  const settings=sanitizeCertificateSettings(data?.settings,graduates);
   if(!settings.tr.length || !settings.en.length) return jsonError("Türkçe ve İngilizce sertifika metni gereklidir.");
-  await env.DB.prepare("INSERT INTO certificate_settings (slug,settings_json,updated_at) VALUES (?,?,?) ON CONFLICT(slug) DO UPDATE SET settings_json=excluded.settings_json,updated_at=excluded.updated_at").bind(slug,JSON.stringify(settings),Date.now()).run();
-  return Response.json({ok:true,settings});
+  // Keep the numbers of participants who are not listed right now (restored if they are added back).
+  const stored=await env.DB.prepare("SELECT settings_json FROM certificate_settings WHERE slug=?").bind(slug).first<{settings_json:string}>();
+  const listed=new Set(graduates);
+  const kept=Object.fromEntries(Object.entries(parseCertificateSettings(stored?.settings_json)?.serials||{}).filter(([name])=>!listed.has(name)));
+  // A participant whose number was cleared gets the next one right away.
+  const complete=assignMissingSerials({...settings,serials:{...kept,...settings.serials}},graduates,recordGroupNumber(slug,record.title||"")).settings;
+  await env.DB.prepare(SAVE_CERTIFICATE_SETTINGS).bind(slug,JSON.stringify(complete),Date.now()).run();
+  return Response.json({ok:true,settings:sanitizeCertificateSettings(complete,graduates)});
 }
 
 function withSecurityHeaders(response: Response) {
