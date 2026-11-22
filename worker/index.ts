@@ -2,9 +2,16 @@
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
 
+interface CertificateStore {
+  get(key: string, options: { type: "stream" }): Promise<ReadableStream | null>;
+  put(key: string, value: ArrayBuffer, options?: { metadata?: Record<string, unknown> }): Promise<void>;
+  delete(key: string): Promise<void>;
+}
+
 interface Env {
   ASSETS: Fetcher;
   DB: D1Database;
+  CERTIFICATES?: CertificateStore;
   RESEND_API_KEY?: string;
   SESSION_SECRET?: string;
   BOOTSTRAP_PASSWORD_HASH?: string;
@@ -84,6 +91,7 @@ async function ensureAdminDb(env: Env) {
     env.DB.prepare("CREATE TABLE IF NOT EXISTS password_reset_tokens (token_hash TEXT PRIMARY KEY, email TEXT NOT NULL, expires_at INTEGER NOT NULL, used_at INTEGER)"),
     env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_admin_sessions_expires ON admin_sessions(expires_at)"),
     env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_expires ON password_reset_tokens(expires_at)"),
+    env.DB.prepare("CREATE TABLE IF NOT EXISTS certificate_files (slug TEXT NOT NULL, name_key TEXT NOT NULL, display_name TEXT NOT NULL, original_name TEXT, pdf_size INTEGER NOT NULL, has_preview INTEGER NOT NULL DEFAULT 0, version TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (slug, name_key))"),
   ]);
   for (const [slug, title, subtitle, graduates] of seedRecords) await env.DB.prepare("INSERT OR IGNORE INTO verification_records (slug,title,subtitle,graduates_json,created_at,updated_at) VALUES (?,?,?,?,?,?)").bind(slug, title, subtitle, JSON.stringify(graduates), now, now).run();
   if (env.BOOTSTRAP_PASSWORD_HASH) for (const email of ADMIN_EMAILS) await env.DB.prepare("INSERT OR IGNORE INTO admin_credentials (email,password_hash,updated_at) VALUES (?,?,?)").bind(email, env.BOOTSTRAP_PASSWORD_HASH, now).run();
@@ -218,7 +226,14 @@ async function handlePasswordReset(request: Request, env: Env) {
 function slugify(value:string) { return value.toLocaleLowerCase("tr-TR").replaceAll("ı","i").replaceAll("ş","s").replaceAll("ğ","g").replaceAll("ü","u").replaceAll("ö","o").replaceAll("ç","c").normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[^a-z0-9]+/g,"-").replace(/(^-|-$)/g,"").slice(0,90); }
 async function handleAdminRecords(request:Request, env:Env) {
   const email=await authenticatedEmail(request,env); if(!email) return jsonError("Oturum gerekli.",401);
-  if(request.method==="GET") { const rows=await env.DB.prepare("SELECT slug,title,subtitle,graduates_json,note,certificate_url,certificate_label,created_at,updated_at FROM verification_records ORDER BY updated_at DESC").all(); return Response.json({ok:true,records:rows.results}); }
+  if(request.method==="GET") {
+    const rows=await env.DB.prepare("SELECT slug,title,subtitle,graduates_json,note,certificate_url,certificate_label,created_at,updated_at FROM verification_records ORDER BY updated_at DESC").all<Record<string,unknown>>();
+    const files=await env.DB.prepare("SELECT slug,name_key,original_name,pdf_size,has_preview,version FROM certificate_files").all<CertificateRow>();
+    const bySlug=new Map<string,CertificateRow[]>();
+    for(const row of files.results) bySlug.set(row.slug,[...(bySlug.get(row.slug)||[]),row]);
+    const records=rows.results.map(record=>({...record,certificates:certificatesFor(String(record.slug),String(record.graduates_json||"[]"),bySlug.get(String(record.slug))||[])}));
+    return Response.json({ok:true,records,storageReady:Boolean(env.CERTIFICATES)});
+  }
   if(!validOrigin(request)) return jsonError("Geçersiz istek kaynağı.",403);
   const data=await request.json().catch(()=>null) as {record?:Record<string,unknown>}|null; const r=data?.record||{}; const title=String(r.title||"").trim().slice(0,180); const rawSlug=String(r.slug||"").trim(); const slug=slugify(rawSlug||title); const graduates=Array.isArray(r.graduates)?r.graduates.map(x=>String(x).trim()).filter(Boolean).slice(0,500):[];
   if(!slug || !title) return jsonError("Grup adı ve bağlantı adı gereklidir."); const now=Date.now();
@@ -228,14 +243,112 @@ async function handleAdminRecords(request:Request, env:Env) {
 
 async function handleVerification(request:Request, env:Env) {
   await ensureAdminDb(env); const rawSlug=new URL(request.url).searchParams.get("slug")||""; const slug=rawSlug==="egitim-enstitusu1"?"eğitim-enstitüsü1":rawSlug;
-  const record=await env.DB.prepare("SELECT slug,title,subtitle,graduates_json,note,certificate_url,certificate_label FROM verification_records WHERE slug=?").bind(slug).first();
-  if(!record) return jsonError("Kayıt bulunamadı.",404); return Response.json({ok:true,record});
+  const record=await env.DB.prepare("SELECT slug,title,subtitle,graduates_json,note,certificate_url,certificate_label FROM verification_records WHERE slug=?").bind(slug).first<Record<string,unknown>>();
+  if(!record) return jsonError("Kayıt bulunamadı.",404);
+  const files=await env.DB.prepare("SELECT slug,name_key,original_name,pdf_size,has_preview,version FROM certificate_files WHERE slug=?").bind(String(record.slug)).all<CertificateRow>();
+  return Response.json({ok:true,record:{...record,certificates:certificatesFor(String(record.slug),String(record.graduates_json||"[]"),files.results)}});
 }
 
-function withSecurityHeaders(response: Response) {
+// Participant certificates: PDF + optional JPEG preview in KV, current version in D1.
+type CertificateRow={slug:string;name_key:string;original_name:string|null;pdf_size:number;has_preview:number;version:string};
+const MAX_CERTIFICATE_PDF=24*1024*1024;
+const MAX_CERTIFICATE_PREVIEW=4*1024*1024;
+
+function certificateKey(name:string) { return slugify(name) || "katilimci"; }
+function certificateStorageKey(slug:string, key:string, version:string, ext:"pdf"|"jpg") { return `certificates/${slug}/${key}/${version}.${ext}`; }
+function certificateUrl(slug:string, key:string, version:string, ext:"pdf"|"jpg") { return `/sertifika/${encodeURIComponent(slug)}/${key}.${ext}?v=${version}`; }
+function parseGraduates(json:string) { try { const list=JSON.parse(json); return Array.isArray(list)?list.map(item=>String(item)):[]; } catch { return []; } }
+
+function certificatesFor(slug:string, graduatesJson:string, rows:CertificateRow[]) {
+  const byKey=new Map(rows.map(row=>[row.name_key,row]));
+  const result:Record<string,{key:string;pdf:string;preview:string|null;size:number;originalName:string|null}>={};
+  for(const name of parseGraduates(graduatesJson)) {
+    const key=certificateKey(name); const row=byKey.get(key);
+    if(row) result[name]={key,pdf:certificateUrl(slug,key,row.version,"pdf"),preview:row.has_preview?certificateUrl(slug,key,row.version,"jpg"):null,size:row.pdf_size,originalName:row.original_name};
+  }
+  return result;
+}
+
+function startsWith(bytes:Uint8Array, signature:number[]) { return signature.every((value,index)=>bytes[index]===value); }
+
+async function graduateInRecord(env:Env, slug:string, name:string) {
+  const record=await env.DB.prepare("SELECT graduates_json FROM verification_records WHERE slug=?").bind(slug).first<{graduates_json:string}>();
+  return Boolean(record && parseGraduates(record.graduates_json).includes(name));
+}
+
+async function deleteStoredCertificate(env:Env, row:CertificateRow) {
+  if(!env.CERTIFICATES) return;
+  await env.CERTIFICATES.delete(certificateStorageKey(row.slug,row.name_key,row.version,"pdf"));
+  if(row.has_preview) await env.CERTIFICATES.delete(certificateStorageKey(row.slug,row.name_key,row.version,"jpg"));
+}
+
+async function handleCertificateUpload(request:Request, env:Env) {
+  const email=await authenticatedEmail(request,env); if(!email) return jsonError("Oturum gerekli.",401);
+  if(!validOrigin(request)) return jsonError("Geçersiz istek kaynağı.",403);
+  if(!env.CERTIFICATES) return jsonError("Sertifika deposu henüz yapılandırılmadı.",503);
+  const form=await request.formData().catch(()=>null);
+  if(!form) return jsonError("Dosya okunamadı.");
+  const slug=String(form.get("slug")||"").trim(); const name=String(form.get("name")||"").trim();
+  const pdf=form.get("pdf"); const preview=form.get("preview");
+  if(!slug || !name || !(pdf instanceof File)) return jsonError("Kayıt, katılımcı ve PDF dosyası gereklidir.");
+  if(!await graduateInRecord(env,slug,name)) return jsonError("Katılımcı bu kayıtta bulunamadı. Listeyi değiştirdiyseniz önce kaydedin.");
+  if(pdf.size===0 || pdf.size>MAX_CERTIFICATE_PDF) return jsonError("PDF en fazla 24 MB olabilir.");
+  const pdfBytes=await pdf.arrayBuffer();
+  if(!startsWith(new Uint8Array(pdfBytes,0,Math.min(5,pdfBytes.byteLength)),[0x25,0x50,0x44,0x46,0x2d])) return jsonError("Yalnızca PDF dosyası yüklenebilir.");
+  let previewBytes:ArrayBuffer|null=null;
+  if(preview instanceof File && preview.size>0) {
+    if(preview.size>MAX_CERTIFICATE_PREVIEW) return jsonError("Önizleme görseli çok büyük.");
+    previewBytes=await preview.arrayBuffer();
+    if(!startsWith(new Uint8Array(previewBytes,0,Math.min(3,previewBytes.byteLength)),[0xff,0xd8,0xff])) return jsonError("Önizleme görseli JPEG olmalıdır.");
+  }
+  const key=certificateKey(name); const version=`${Date.now().toString(36)}${randomToken().slice(0,6)}`.toLowerCase().replace(/[^a-z0-9]/g,"");
+  const previous=await env.DB.prepare("SELECT slug,name_key,original_name,pdf_size,has_preview,version FROM certificate_files WHERE slug=? AND name_key=?").bind(slug,key).first<CertificateRow>();
+  await env.CERTIFICATES.put(certificateStorageKey(slug,key,version,"pdf"),pdfBytes,{metadata:{name,uploadedBy:email}});
+  if(previewBytes) await env.CERTIFICATES.put(certificateStorageKey(slug,key,version,"jpg"),previewBytes,{metadata:{name}});
+  await env.DB.prepare("INSERT INTO certificate_files (slug,name_key,display_name,original_name,pdf_size,has_preview,version,updated_at) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(slug,name_key) DO UPDATE SET display_name=excluded.display_name,original_name=excluded.original_name,pdf_size=excluded.pdf_size,has_preview=excluded.has_preview,version=excluded.version,updated_at=excluded.updated_at").bind(slug,key,name,pdf.name.slice(0,200)||null,pdf.size,previewBytes?1:0,version,Date.now()).run();
+  if(previous && previous.version!==version) await deleteStoredCertificate(env,previous);
+  return Response.json({ok:true,certificate:{key,pdf:certificateUrl(slug,key,version,"pdf"),preview:previewBytes?certificateUrl(slug,key,version,"jpg"):null,size:pdf.size,originalName:pdf.name||null}});
+}
+
+async function handleCertificateDelete(request:Request, env:Env) {
+  const email=await authenticatedEmail(request,env); if(!email) return jsonError("Oturum gerekli.",401);
+  if(!validOrigin(request)) return jsonError("Geçersiz istek kaynağı.",403);
+  const data=await request.json().catch(()=>null) as {slug?:string;name?:string}|null;
+  const slug=String(data?.slug||"").trim(); const key=certificateKey(String(data?.name||"").trim());
+  const row=await env.DB.prepare("SELECT slug,name_key,original_name,pdf_size,has_preview,version FROM certificate_files WHERE slug=? AND name_key=?").bind(slug,key).first<CertificateRow>();
+  if(!row) return jsonError("Sertifika bulunamadı.",404);
+  await env.DB.prepare("DELETE FROM certificate_files WHERE slug=? AND name_key=?").bind(slug,key).run();
+  await deleteStoredCertificate(env,row);
+  return Response.json({ok:true});
+}
+
+function contentDisposition(type:"inline"|"attachment", filename:string) {
+  const ascii=filename.normalize("NFD").replace(/[̀-ͯ]/g,"").replace(/ı/g,"i").replace(/İ/g,"I").replace(/[^A-Za-z0-9 ._-]/g,"_");
+  return `${type}; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(filename)}`;
+}
+
+async function serveCertificateFile(request:Request, env:Env, slug:string, key:string, ext:"pdf"|"jpg") {
+  if(!["GET","HEAD"].includes(request.method)) return new Response("Method Not Allowed",{status:405,headers:{Allow:"GET, HEAD"}});
+  await ensureAdminDb(env);
+  const row=await env.DB.prepare("SELECT slug,name_key,display_name,has_preview,version FROM certificate_files WHERE slug=? AND name_key=?").bind(slug,key).first<CertificateRow & {display_name:string}>();
+  if(!row || !env.CERTIFICATES || (ext==="jpg" && !row.has_preview)) return new Response("Sertifika bulunamadı.",{status:404,headers:{"Content-Type":"text/plain; charset=utf-8"}});
+  const body=await env.CERTIFICATES.get(certificateStorageKey(slug,key,row.version,ext),{type:"stream"});
+  if(!body) return new Response("Sertifika bulunamadı.",{status:404,headers:{"Content-Type":"text/plain; charset=utf-8"}});
+  const url=new URL(request.url); const current=url.searchParams.get("v")===row.version;
+  const headers=new Headers({
+    "Content-Type": ext==="pdf" ? "application/pdf" : "image/jpeg",
+    "Cache-Control": current ? "public, max-age=31536000, immutable" : "public, max-age=60",
+    "X-Robots-Tag": "noindex, nofollow",
+  });
+  if(ext==="pdf") headers.set("Content-Disposition",contentDisposition(url.searchParams.has("indir")?"attachment":"inline",`${row.display_name.split(" · ")[0]} - Sertifika.pdf`));
+  if(request.method==="HEAD") { await body.cancel(); return new Response(null,{headers}); }
+  return new Response(body,{headers});
+}
+
+function withSecurityHeaders(response: Response, allowSameOriginFrame = false) {
   const headers = new Headers(response.headers);
   headers.set("X-Content-Type-Options", "nosniff");
-  headers.set("X-Frame-Options", "DENY");
+  headers.set("X-Frame-Options", allowSameOriginFrame ? "SAMEORIGIN" : "DENY");
   headers.set("Referrer-Policy", "strict-origin-when-cross-origin");
   headers.set("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
   headers.set("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
@@ -287,6 +400,7 @@ function sitemapXml() {
 const worker = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
+    const certificateFileMatch = url.pathname.match(/^\/sertifika\/([^/]+)\/([a-z0-9-]+)\.(pdf|jpg)$/);
     let response: Response;
 
     if (url.hostname === "www.eenstitu.com" || (url.hostname === "eenstitu.com" && url.protocol === "http:")) {
@@ -314,6 +428,14 @@ const worker = {
       response = ["GET", "POST"].includes(request.method) ? await handleAdminRecords(request, env) : new Response("Method Not Allowed", { status: 405, headers:{Allow:"GET, POST"} });
     } else if (url.pathname === "/api/verification") {
       response = request.method === "GET" ? await handleVerification(request, env) : new Response("Method Not Allowed", { status: 405, headers:{Allow:"GET"} });
+    } else if (url.pathname === "/api/admin/certificates") {
+      response = request.method === "POST" ? await handleCertificateUpload(request, env)
+        : request.method === "DELETE" ? await handleCertificateDelete(request, env)
+        : new Response("Method Not Allowed", { status: 405, headers:{Allow:"POST, DELETE"} });
+    } else if (certificateFileMatch) {
+      let slug = certificateFileMatch[1];
+      try { slug = decodeURIComponent(slug); } catch { /* keep raw */ }
+      response = await serveCertificateFile(request, env, slug, certificateFileMatch[2], certificateFileMatch[3] as "pdf" | "jpg");
     } else if (url.pathname === "/_vinext/image") {
       const allowedWidths = [...DEFAULT_DEVICE_SIZES, ...DEFAULT_IMAGE_SIZES];
       response = await handleImageOptimization(request, {
@@ -327,7 +449,7 @@ const worker = {
       response = await handler.fetch(request, env, ctx);
     }
 
-    return withSecurityHeaders(seoResponse(request, response));
+    return withSecurityHeaders(seoResponse(request, response), Boolean(certificateFileMatch));
   },
 };
 

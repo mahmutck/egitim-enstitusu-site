@@ -98,3 +98,79 @@ test("form emails use info sender, correct reply addresses and escaped content",
   assert.doesNotMatch(sent[0].html,/<script>|<img/);assert.match(sent[0].html,/&lt;script&gt;/);
  } finally {globalThis.fetch=original;}
 });
+
+test("participant certificates: admin upload, public view/download, replace and delete", async () => {
+  const { DatabaseSync } = await import("node:sqlite");
+  const db = new DatabaseSync(":memory:");
+  const store = new Map();
+  const kv = {
+    async get(key) { const value = store.get(key); return value ? new Blob([value]).stream() : null; },
+    async put(key, value) { store.set(key, new Uint8Array(value)); },
+    async delete(key) { store.delete(key); },
+  };
+  const testEnv = { ...env, SESSION_SECRET: "test-only-not-a-production-secret", CERTIFICATES: kv, DB: {
+    prepare(sql) { let values=[]; return { bind(...args) { values=args; return this; }, async run() { return db.prepare(sql).run(...values); }, async first() { return db.prepare(sql).get(...values) ?? null; }, async all() { return { results: db.prepare(sql).all(...values) }; }, sql() { return [sql,values]; } }; },
+    async batch(statements) { return statements.map(s => { const [sql,args]=s.sql(); return db.prepare(sql).run(...args); }); },
+  } };
+  const send = (path, init = {}) => worker.fetch(new Request(`https://eenstitu.com${path}`, { ...init, headers: { Origin: "https://eenstitu.com", ...(init.headers || {}) } }), testEnv, context);
+  await send("/api/admin/session");
+  const token = "certificate-test-token";
+  const hash = Buffer.from(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token))).toString("base64url");
+  db.prepare("INSERT INTO password_reset_tokens VALUES (?,?,?,NULL)").run(hash, "info@eenstitu.com", Date.now() + 60000);
+  const proof = "B".repeat(43);
+  await send("/api/admin/reset-password", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token, passwordProof: proof }) });
+  const login = await send("/api/admin/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: "info@eenstitu.com", passwordProof: proof }) });
+  const cookie = login.headers.get("set-cookie").split(";")[0];
+
+  const slug = "hipnosomatik-00019"; const name = "Zeynep Kabaklı";
+  const pdfBytes = new TextEncoder().encode("%PDF-1.7\n% test certificate\n%%EOF");
+  const jpegBytes = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3]);
+  const upload = (fields, withCookie = true) => { const body = new FormData(); for (const [k, v] of Object.entries(fields)) body.set(k, v); return send("/api/admin/certificates", { method: "POST", body, headers: withCookie ? { Cookie: cookie } : {} }); };
+
+  assert.equal((await upload({ slug, name, pdf: new File([pdfBytes], "Zeynep_Kabakl_.pdf") }, false)).status, 401);
+  assert.equal((await upload({ slug, name: "Listede Olmayan Kişi", pdf: new File([pdfBytes], "x.pdf") })).status, 400);
+  assert.equal((await upload({ slug, name, pdf: new File([new TextEncoder().encode("<html>not a pdf")], "x.pdf") })).status, 400);
+  const crossOrigin = new FormData(); crossOrigin.set("slug", slug); crossOrigin.set("name", name); crossOrigin.set("pdf", new File([pdfBytes], "x.pdf"));
+  assert.equal((await worker.fetch(new Request("https://eenstitu.com/api/admin/certificates", { method: "POST", body: crossOrigin, headers: { Origin: "https://evil.example", Cookie: cookie } }), testEnv, context)).status, 403);
+
+  const ok = await upload({ slug, name, pdf: new File([pdfBytes], "Zeynep_Kabakl_.pdf"), preview: new File([jpegBytes], "preview.jpg", { type: "image/jpeg" }) });
+  assert.equal(ok.status, 200);
+  const { certificate } = await ok.json();
+  assert.equal(certificate.key, "zeynep-kabakli");
+  assert.match(certificate.pdf, /^\/sertifika\/hipnosomatik-00019\/zeynep-kabakli\.pdf\?v=[a-z0-9]+$/);
+  assert.equal(store.size, 2);
+
+  const verification = await (await send(`/api/verification?slug=${slug}`)).json();
+  assert.deepEqual(Object.keys(verification.record.certificates), [name]);
+  assert.equal(verification.record.certificates[name].pdf, certificate.pdf);
+
+  const inline = await send(certificate.pdf);
+  assert.equal(inline.status, 200);
+  assert.equal(inline.headers.get("content-type"), "application/pdf");
+  assert.match(inline.headers.get("content-disposition"), /^inline; filename="Zeynep Kabakli - Sertifika\.pdf"; filename\*=UTF-8''Zeynep%20Kabakl%C4%B1%20-%20Sertifika\.pdf$/);
+  assert.equal(inline.headers.get("x-frame-options"), "SAMEORIGIN");
+  assert.match(inline.headers.get("cache-control"), /immutable/);
+  assert.deepEqual(new Uint8Array(await inline.arrayBuffer()), pdfBytes);
+  assert.match((await send(`${certificate.pdf}&indir=1`)).headers.get("content-disposition"), /^attachment;/);
+  const preview = await send(certificate.preview);
+  assert.equal(preview.headers.get("content-type"), "image/jpeg");
+
+  const records = await (await send("/api/admin/records", { headers: { Cookie: cookie } })).json();
+  assert.equal(records.storageReady, true);
+  assert.equal(records.records.find(r => r.slug === slug).certificates[name].size, pdfBytes.length);
+
+  const replaced = await (await upload({ slug, name, pdf: new File([pdfBytes], "yeni.pdf") })).json();
+  assert.notEqual(replaced.certificate.pdf, certificate.pdf);
+  assert.equal(replaced.certificate.preview, null);
+  assert.equal(store.size, 1, "old version files are removed after replacement");
+  assert.equal((await send(certificate.preview)).status, 404);
+
+  assert.equal((await send("/api/admin/certificates", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ slug, name }) })).status, 401);
+  const removed = await send("/api/admin/certificates", { method: "DELETE", headers: { "Content-Type": "application/json", Cookie: cookie }, body: JSON.stringify({ slug, name }) });
+  assert.equal(removed.status, 200);
+  assert.equal(store.size, 0);
+  assert.equal((await send(replaced.certificate.pdf)).status, 404);
+  const malformed = await send("/sertifika/hipnosomatik-00019/Zeynep%20Kabakl%C4%B1.pdf");
+  assert.notEqual(malformed.headers.get("content-type"), "application/pdf", "only slugified keys reach the certificate route");
+  db.close();
+});

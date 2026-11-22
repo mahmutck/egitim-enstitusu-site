@@ -18,6 +18,12 @@
       "database_id": "86f47be7-56da-4d24-b89e-4a124fce4102"
     }
   ],
+  "kv_namespaces": [
+    {
+      "binding": "CERTIFICATES",
+      "id": "f1bed4f64f4a49ceb5c67a4045077ec2"
+    }
+  ],
   "routes": [
     {
       "pattern": "eenstitu.com",

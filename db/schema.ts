@@ -1,4 +1,4 @@
-import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { integer, primaryKey, sqliteTable, text } from "drizzle-orm/sqlite-core";
 
 export const verificationRecords = sqliteTable("verification_records", {
   slug: text("slug").primaryKey(),
@@ -30,3 +30,16 @@ export const passwordResetTokens = sqliteTable("password_reset_tokens", {
   expiresAt: integer("expires_at").notNull(),
   usedAt: integer("used_at"),
 });
+
+// One certificate PDF (and optional JPEG preview) per participant of a verification record.
+// File bytes live in the CERTIFICATES KV namespace under certificates/<slug>/<name_key>/<version>.<pdf|jpg>.
+export const certificateFiles = sqliteTable("certificate_files", {
+  slug: text("slug").notNull(),
+  nameKey: text("name_key").notNull(),
+  displayName: text("display_name").notNull(),
+  originalName: text("original_name"),
+  pdfSize: integer("pdf_size").notNull(),
+  hasPreview: integer("has_preview").notNull().default(0),
+  version: text("version").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+}, (table) => [primaryKey({ columns: [table.slug, table.nameKey] })]);
