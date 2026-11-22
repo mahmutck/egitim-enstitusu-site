@@ -13,10 +13,20 @@ npm run dev
 
 ## Build, verify and deploy
 
+Pushing to `main` deploys automatically. The `eenstitu-web` Worker is connected to this repository through Cloudflare Workers Builds:
+
+- Build command: `npm run build`
+- Deploy command: `npm run deploy`
+- Build variable: `NODE_VERSION=22`
+- Preview builds for other branches are off.
+
+Build logs are under Workers & Pages → `eenstitu-web` → Deployments. Run the tests before pushing:
+
 ```sh
 npm test
-npm run deploy
 ```
+
+Manual deploy (only if needed) still works with `npm run deploy` after `wrangler login`.
 
 `vite.cloudflare.config.ts` and `wrangler.cloudflare.jsonc` are the production configuration. Authenticate with Wrangler using the Cloudflare account that owns these resources. Custom domains include `eenstitu.com` and `www.eenstitu.com`; www redirects to the apex.
 
