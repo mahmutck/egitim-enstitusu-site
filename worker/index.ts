@@ -1,7 +1,7 @@
 /** Cloudflare Worker entry point for the vinext-starter template. */
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
-import { CertificateSettings, parseCertificateSettings, sanitizeCertificateSettings } from "../app/certificates/settings";
+import { CertificateSettings, formatTrainingRange, isIsoDate, parseCertificateSettings, sanitizeCertificateSettings } from "../app/certificates/settings";
 import { certificateKey } from "../app/certificates/key";
 
 interface CertificateStore {
@@ -93,6 +93,7 @@ async function ensureAdminDb(env: Env) {
     env.DB.prepare("CREATE TABLE IF NOT EXISTS password_reset_tokens (token_hash TEXT PRIMARY KEY, email TEXT NOT NULL, expires_at INTEGER NOT NULL, used_at INTEGER)"),
     env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_admin_sessions_expires ON admin_sessions(expires_at)"),
     env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_expires ON password_reset_tokens(expires_at)"),
+    env.DB.prepare("CREATE TABLE IF NOT EXISTS training_dates (slug TEXT PRIMARY KEY, start_date TEXT NOT NULL, end_date TEXT NOT NULL, updated_at INTEGER NOT NULL)"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS certificate_settings (slug TEXT PRIMARY KEY, settings_json TEXT NOT NULL, updated_at INTEGER NOT NULL)"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS certificate_files (slug TEXT NOT NULL, name_key TEXT NOT NULL, display_name TEXT NOT NULL, original_name TEXT, pdf_size INTEGER NOT NULL, has_preview INTEGER NOT NULL DEFAULT 0, version TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (slug, name_key))"),
   ]);
@@ -230,7 +231,7 @@ function slugify(value:string) { return value.toLocaleLowerCase("tr-TR").replace
 async function handleAdminRecords(request:Request, env:Env) {
   const email=await authenticatedEmail(request,env); if(!email) return jsonError("Oturum gerekli.",401);
   if(request.method==="GET") {
-    const rows=await env.DB.prepare("SELECT slug,title,subtitle,graduates_json,note,certificate_url,certificate_label,created_at,updated_at FROM verification_records ORDER BY updated_at DESC").all<Record<string,unknown>>();
+    const rows=await env.DB.prepare("SELECT v.slug,v.title,v.subtitle,v.graduates_json,v.note,v.certificate_url,v.certificate_label,v.created_at,v.updated_at,t.start_date AS training_start,t.end_date AS training_end FROM verification_records v LEFT JOIN training_dates t ON t.slug=v.slug ORDER BY v.updated_at DESC").all<Record<string,unknown>>();
     const files=await env.DB.prepare("SELECT slug,name_key,original_name,pdf_size,has_preview,version FROM certificate_files").all<CertificateRow>();
     const bySlug=new Map<string,CertificateRow[]>();
     for(const row of files.results) bySlug.set(row.slug,[...(bySlug.get(row.slug)||[]),row]);
@@ -238,21 +239,29 @@ async function handleAdminRecords(request:Request, env:Env) {
     const settingsBySlug=new Map(settings.results.map(row=>[row.slug,row.settings_json]));
     const records=rows.results.map(record=>{
       const slug=String(record.slug); const graduatesJson=String(record.graduates_json||"[]"); const graduates=parseGraduates(graduatesJson);
-      return {...record,certificates:certificatesFor(slug,graduatesJson,bySlug.get(slug)||[]),certificate_settings:parseCertificateSettings(settingsBySlug.get(slug),graduates),participant_keys:Object.fromEntries(graduates.map(name=>[name,certificateKey(name)]))};
+      return {...record,training_range:formatTrainingRange(record.training_start as string|null,record.training_end as string|null),certificates:certificatesFor(slug,graduatesJson,bySlug.get(slug)||[]),certificate_settings:parseCertificateSettings(settingsBySlug.get(slug),graduates),participant_keys:Object.fromEntries(graduates.map(name=>[name,certificateKey(name)]))};
     });
     return Response.json({ok:true,records,storageReady:Boolean(env.CERTIFICATES)});
   }
   if(!validOrigin(request)) return jsonError("Geçersiz istek kaynağı.",403);
   const data=await request.json().catch(()=>null) as {record?:Record<string,unknown>}|null; const r=data?.record||{}; const title=String(r.title||"").trim().slice(0,180); const rawSlug=String(r.slug||"").trim(); const slug=slugify(rawSlug||title); const graduates=Array.isArray(r.graduates)?r.graduates.map(x=>String(x).trim()).filter(Boolean).slice(0,500):[];
   if(!slug || !title) return jsonError("Grup adı ve bağlantı adı gereklidir."); const now=Date.now();
+  const startInput=String(r.trainingStart||"").trim(); const endInput=String(r.trainingEnd||"").trim();
+  if((startInput && !isIsoDate(startInput)) || (endInput && !isIsoDate(endInput))) return jsonError("Geçerli bir eğitim tarih aralığı seçin.");
   await env.DB.prepare("INSERT INTO verification_records (slug,title,subtitle,graduates_json,note,certificate_url,certificate_label,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(slug) DO UPDATE SET title=excluded.title,subtitle=excluded.subtitle,graduates_json=excluded.graduates_json,note=excluded.note,certificate_url=excluded.certificate_url,certificate_label=excluded.certificate_label,updated_at=excluded.updated_at").bind(slug,title,String(r.subtitle||"").trim().slice(0,400)||null,JSON.stringify(graduates),String(r.note||"").trim().slice(0,1200)||null,String(r.certificateUrl||"").trim().slice(0,400)||null,String(r.certificateLabel||"").trim().slice(0,180)||null,now,now).run();
+  if(!startInput && !endInput) await env.DB.prepare("DELETE FROM training_dates WHERE slug=?").bind(slug).run();
+  else {
+    let start=startInput||endInput; let end=endInput||startInput; if(end<start) [start,end]=[end,start];
+    await env.DB.prepare("INSERT INTO training_dates (slug,start_date,end_date,updated_at) VALUES (?,?,?,?) ON CONFLICT(slug) DO UPDATE SET start_date=excluded.start_date,end_date=excluded.end_date,updated_at=excluded.updated_at").bind(slug,start,end,now).run();
+  }
   return Response.json({ok:true,slug,url:`${new URL(request.url).origin}/${encodeURIComponent(slug)}`});
 }
 
 async function handleVerification(request:Request, env:Env) {
   await ensureAdminDb(env); const rawSlug=new URL(request.url).searchParams.get("slug")||""; const slug=rawSlug==="egitim-enstitusu1"?"eğitim-enstitüsü1":rawSlug;
-  const record=await env.DB.prepare("SELECT slug,title,subtitle,graduates_json,note,certificate_url,certificate_label FROM verification_records WHERE slug=?").bind(slug).first<Record<string,unknown>>();
-  if(!record) return jsonError("Kayıt bulunamadı.",404);
+  const row=await env.DB.prepare("SELECT v.slug,v.title,v.subtitle,v.graduates_json,v.note,v.certificate_url,v.certificate_label,t.start_date AS training_start,t.end_date AS training_end FROM verification_records v LEFT JOIN training_dates t ON t.slug=v.slug WHERE v.slug=?").bind(slug).first<Record<string,unknown>>();
+  if(!row) return jsonError("Kayıt bulunamadı.",404);
+  const record={...row,training_range:formatTrainingRange(row.training_start as string|null,row.training_end as string|null)};
   // Certificates are visible to the administrators only; everyone else gets the participant list.
   if(!await authenticatedEmail(request,env)) return Response.json({ok:true,record:{...record,admin:false,generated:null,certificates:{}}},{headers:{"Cache-Control":"private, no-store"}});
   const files=await env.DB.prepare("SELECT slug,name_key,original_name,pdf_size,has_preview,version FROM certificate_files WHERE slug=?").bind(String(record.slug)).all<CertificateRow>();

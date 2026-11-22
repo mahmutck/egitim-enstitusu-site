@@ -50,3 +50,11 @@ export const certificateSettings = sqliteTable("certificate_settings", {
   settingsJson: text("settings_json").notNull(),
   updatedAt: integer("updated_at").notNull(),
 });
+
+// Training date range per verification record (YYYY-MM-DD); fills {tarih}/{date} in certificate text.
+export const trainingDates = sqliteTable("training_dates", {
+  slug: text("slug").primaryKey(),
+  startDate: text("start_date").notNull(),
+  endDate: text("end_date").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+});

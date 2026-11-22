@@ -42,6 +42,8 @@ Certificates are visible to the two administrators only (signed in at `/admin`).
 
 ### Generated from the template (default)
 
+Each record has a training date range (**Eğitim tarih aralığı**, picked on a calendar in the record form; stored in the D1 table `training_dates`). In certificate text, `{tarih}` becomes the Turkish range (e.g. "15-22 Mayıs 2026") and `{date}` the English one ("15–22 May 2026").
+
 `/admin` → record → **Sertifikalar** → **Sertifikaları şablondan üret**. Fill in the Turkish and English text (up to three lines each), the date and the serial numbers (**Boş seri numaralarını doldur** assigns prefix + next number in list order), then save. Each participant row has **Görüntüle** and **İndir**. Nothing is stored per certificate: the visitor's browser builds the certificate from `public/certificate/template.pdf` (blank vector template made from the original Illustrator certificate) with `app/certificates/generator.ts` — a JPEG preview on screen and a PDF on download. Each certificate carries a QR code to `https://eenstitu.com/<kayit>#<ad-soyad>`, which opens the record page with that participant highlighted (administrators also get the certificate opened). Fonts are open-license substitutes (see `public/certificate/fonts/README.txt`); layout coordinates are in points measured on the original.
 
 ### Uploaded PDFs (legacy, no admin UI)

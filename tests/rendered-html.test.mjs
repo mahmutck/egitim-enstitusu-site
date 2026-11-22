@@ -236,3 +236,44 @@ test("generated certificates: admin settings, serials and public verification da
   assert.deepEqual(Object.keys(verification.certificates), ["Berna Kartal"]);
   db.close();
 });
+
+test("training date range: saved with the record, formatted for certificates", async () => {
+  const { DatabaseSync } = await import("node:sqlite");
+  const db = new DatabaseSync(":memory:");
+  const testEnv = { ...env, SESSION_SECRET: "test-only-not-a-production-secret", DB: {
+    prepare(sql) { let values=[]; return { bind(...args) { values=args; return this; }, async run() { return db.prepare(sql).run(...values); }, async first() { return db.prepare(sql).get(...values) ?? null; }, async all() { return { results: db.prepare(sql).all(...values) }; }, sql() { return [sql,values]; } }; },
+    async batch(statements) { return statements.map(s => { const [sql,args]=s.sql(); return db.prepare(sql).run(...args); }); },
+  } };
+  const send = (path, init = {}) => worker.fetch(new Request(`https://eenstitu.com${path}`, { ...init, headers: { Origin: "https://eenstitu.com", ...(init.headers || {}) } }), testEnv, context);
+  const json = (body, cookie) => ({ method: "POST", headers: { "Content-Type": "application/json", ...(cookie ? { Cookie: cookie } : {}) }, body: JSON.stringify(body) });
+  await send("/api/admin/session");
+  const token = "range-test-token";
+  db.prepare("INSERT INTO password_reset_tokens VALUES (?,?,?,NULL)").run(Buffer.from(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token))).toString("base64url"), "info@eenstitu.com", Date.now() + 60000);
+  const proof = "D".repeat(43);
+  await send("/api/admin/reset-password", json({ token, passwordProof: proof }));
+  const cookie = (await send("/api/admin/login", json({ email: "info@eenstitu.com", passwordProof: proof }))).headers.get("set-cookie").split(";")[0];
+
+  const save = (trainingStart, trainingEnd) => send("/api/admin/records", json({ record: { slug: "tarih-testi", title: "Tarih testi", graduates: ["Ali Veli"], trainingStart, trainingEnd } }, cookie));
+  const range = async () => (await (await send("/api/verification?slug=tarih-testi")).json()).record.training_range;
+
+  assert.equal((await save("2026-05-15", "2026-05-22")).status, 200);
+  assert.deepEqual(await range(), { tr: "15-22 Mayıs 2026", en: "15–22 May 2026" });
+  const records = await (await send("/api/admin/records", { headers: { Cookie: cookie } })).json();
+  const saved = records.records.find(r => r.slug === "tarih-testi");
+  assert.equal(saved.training_start, "2026-05-15"); assert.equal(saved.training_end, "2026-05-22");
+  assert.deepEqual(saved.training_range, { tr: "15-22 Mayıs 2026", en: "15–22 May 2026" });
+
+  await save("2026-04-28", "2026-05-03");
+  assert.deepEqual(await range(), { tr: "28 Nisan - 3 Mayıs 2026", en: "28 April – 3 May 2026" });
+  await save("2025-12-29", "2026-01-02");
+  assert.deepEqual(await range(), { tr: "29 Aralık 2025 - 2 Ocak 2026", en: "29 December 2025 – 2 January 2026" });
+  await save("2026-07-12", "2026-07-12");
+  assert.deepEqual(await range(), { tr: "12 Temmuz 2026", en: "12 July 2026" });
+  await save("2026-07-26", "2026-07-25");
+  assert.deepEqual(await range(), { tr: "25-26 Temmuz 2026", en: "25–26 July 2026" }, "reversed input is swapped");
+  assert.equal((await save("2026-02-30", "2026-03-01")).status, 400, "invalid dates are rejected");
+  assert.deepEqual(await range(), { tr: "25-26 Temmuz 2026", en: "25–26 July 2026" });
+  await save("", "");
+  assert.equal(await range(), null, "clearing removes the range");
+  db.close();
+});

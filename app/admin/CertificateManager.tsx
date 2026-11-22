@@ -2,7 +2,7 @@
 
 import { useMemo, useRef, useState } from "react";
 import { displayName } from "./certificate-tools";
-import { CertificateSettings, DEFAULT_CERTIFICATE_SETTINGS, MAX_LINES } from "../certificates/settings";
+import { applyTrainingRange, CertificateSettings, DEFAULT_CERTIFICATE_SETTINGS, MAX_LINES, TrainingRange, usesTrainingRange } from "../certificates/settings";
 
 export type AdminCertificate = { key: string; pdf: string; preview: string | null; size: number; originalName: string | null };
 export type CertificateRecord = {
@@ -13,6 +13,7 @@ export type CertificateRecord = {
   certificates?: Record<string, AdminCertificate>;
   certificate_settings?: CertificateSettings | null;
   participant_keys?: Record<string, string>;
+  training_range?: TrainingRange | null;
 };
 
 function today() {
@@ -79,7 +80,7 @@ export default function CertificateManager({ record, onChanged }: { record: Cert
 
   async function certificateInput(name: string) {
     const { verificationUrl } = await import("../certificates/generator");
-    return { name, serial: settings.serials[name] || "", date: settings.date, tr: settings.tr, en: settings.en, url: verificationUrl(record.slug, record.participant_keys?.[name] || "") };
+    return { name, serial: settings.serials[name] || "", date: settings.date, tr: applyTrainingRange(settings.tr, record.training_range), en: applyTrainingRange(settings.en, record.training_range), url: verificationUrl(record.slug, record.participant_keys?.[name] || "") };
   }
 
   async function view(name: string) {
@@ -135,6 +136,8 @@ export default function CertificateManager({ record, onChanged }: { record: Cert
           <span><b>Sertifikaları şablondan üret</b><small>Ad, tarih, seri no ve eğitimin linkine giden QR kod otomatik yerleşir. Sertifikalar kaydedilmez, her görüntülemede yeniden üretilir.</small></span>
         </label>
         <div className="admin-form certificate-template-form">
+          <p className="wide certificate-token-hint">Metinde <code>{"{tarih}"}</code> yazan yere Türkçe, <code>{"{date}"}</code> yazan yere İngilizce eğitim tarih aralığı gelir{record.training_range ? <>: <b>{record.training_range.tr}</b> / <b>{record.training_range.en}</b></> : "."}</p>
+          {usesTrainingRange(settings) && !record.training_range && <p className="wide admin-error">Bu kayıtta eğitim tarih aralığı seçilmemiş. Yukarıdaki kayıt formundan aralığı seçip kaydedin.</p>}
           <label className="wide">Türkçe metin <small>En fazla {MAX_LINES} satır; her satır sertifikada ayrı satır olur</small>
             <textarea rows={3} value={settings.tr.join("\n")} onChange={(event) => updateSettings({ tr: event.target.value.split("\n").slice(0, MAX_LINES) })} />
           </label>
