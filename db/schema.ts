@@ -1,4 +1,4 @@
-import { integer, primaryKey, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { integer, primaryKey, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 export const verificationRecords = sqliteTable("verification_records", {
   slug: text("slug").primaryKey(),
@@ -58,3 +58,12 @@ export const trainingDates = sqliteTable("training_dates", {
   endDate: text("end_date").notNull(),
   updatedAt: integer("updated_at").notNull(),
 });
+
+// Permanent QR link per participant: /sertifika/<token>. Never changed or reused.
+export const certificateLinks = sqliteTable("certificate_links", {
+  token: text("token").primaryKey(),
+  slug: text("slug").notNull(),
+  nameKey: text("name_key").notNull(),
+  displayName: text("display_name").notNull(),
+  createdAt: integer("created_at").notNull(),
+}, (table) => [uniqueIndex("certificate_links_slug_name_key").on(table.slug, table.nameKey)]);

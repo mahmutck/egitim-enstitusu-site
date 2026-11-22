@@ -222,7 +222,9 @@ test("generated certificates: admin settings, serials and public verification da
   let verification = (await (await send(`/api/verification?slug=${slug}`, asAdmin)).json()).record;
   assert.deepEqual(verification.generated, { tr: saved.settings.tr, en: saved.settings.en, date: "14-06-2026" });
   assert.equal(Object.keys(verification.certificates).length, 18, "every participant gets a generated certificate");
-  assert.deepEqual(verification.certificates["Zeynep Kabaklı"], { key: "zeynep-kabakli", generated: true, serial: "HS-ON-1910" });
+  const { token: zeynepToken, ...zeynep } = verification.certificates["Zeynep Kabaklı"];
+  assert.deepEqual(zeynep, { key: "zeynep-kabakli", generated: true, serial: "HS-ON-1910" });
+  assert.match(zeynepToken, /^[A-Za-z0-9_-]{16}$/, "generated entries carry the permanent link token");
   assert.equal(verification.certificates["Berna Kartal"].serial, "");
 
   const body = new FormData(); body.set("slug", slug); body.set("name", "Berna Kartal"); body.set("pdf", new File([new TextEncoder().encode("%PDF-1.4 x")], "b.pdf"));
@@ -275,5 +277,71 @@ test("training date range: saved with the record, formatted for certificates", a
   assert.deepEqual(await range(), { tr: "25-26 Temmuz 2026", en: "25–26 July 2026" });
   await save("", "");
   assert.equal(await range(), null, "clearing removes the range");
+  db.close();
+});
+
+test("permanent certificate links: QR target is stable and opens only that certificate", async () => {
+  const { DatabaseSync } = await import("node:sqlite");
+  const db = new DatabaseSync(":memory:");
+  const testEnv = { ...env, SESSION_SECRET: "test-only-not-a-production-secret", DB: {
+    prepare(sql) { let values=[]; return { bind(...args) { values=args; return this; }, async run() { return db.prepare(sql).run(...values); }, async first() { return db.prepare(sql).get(...values) ?? null; }, async all() { return { results: db.prepare(sql).all(...values) }; }, sql() { return [sql,values]; } }; },
+    async batch(statements) { return statements.map(s => { const [sql,args]=s.sql(); return db.prepare(sql).run(...args); }); },
+  } };
+  const send = (path, init = {}) => worker.fetch(new Request(`https://eenstitu.com${path}`, { ...init, headers: { Origin: "https://eenstitu.com", accept: "text/html", "CF-Connecting-IP": "192.0.2.211", ...(init.headers || {}) } }), testEnv, context);
+  const json = (body, cookie) => ({ method: "POST", headers: { "Content-Type": "application/json", ...(cookie ? { Cookie: cookie } : {}) }, body: JSON.stringify(body) });
+  await send("/api/admin/session");
+  const token = "links-test-token";
+  db.prepare("INSERT INTO password_reset_tokens VALUES (?,?,?,NULL)").run(Buffer.from(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token))).toString("base64url"), "info@eenstitu.com", Date.now() + 60000);
+  const proof = "E".repeat(43);
+  await send("/api/admin/reset-password", json({ token, passwordProof: proof }));
+  const cookie = (await send("/api/admin/login", json({ email: "info@eenstitu.com", passwordProof: proof }))).headers.get("set-cookie").split(";")[0];
+  const asAdmin = { headers: { Cookie: cookie } };
+  const links = async () => (await (await send("/api/admin/records", asAdmin)).json()).records.find(r => r.slug === "link-testi").certificate_links;
+  const certificate = (linkToken) => send(`/api/certificate?token=${linkToken}`);
+
+  await send("/api/admin/records", json({ record: { slug: "link-testi", title: "Link testi", graduates: ["Ayşe Yılmaz", "Mehmet Öz"], trainingStart: "2026-05-15", trainingEnd: "2026-05-22" } }, cookie));
+  const first = await links();
+  assert.deepEqual(Object.keys(first), ["Ayşe Yılmaz", "Mehmet Öz"]);
+  for (const value of Object.values(first)) assert.match(value, /^[A-Za-z0-9_-]{16}$/);
+  assert.notEqual(first["Ayşe Yılmaz"], first["Mehmet Öz"], "every certificate has its own link");
+  assert.deepEqual(await links(), first, "links do not change between requests");
+
+  const ayse = first["Ayşe Yılmaz"];
+  assert.equal((await certificate(ayse)).status, 404, "no certificate while generation is off");
+  await send("/api/admin/certificate-settings", json({ slug: "link-testi", settings: { enabled: true, tr: ["{tarih} tarihinde gerçekleştirilen"], en: ["Training conducted between {date}"], date: "14-06-2026", serialPrefix: "HS-", nextSerial: 3, serials: { "Ayşe Yılmaz": "HS-1" } } }, cookie));
+  const response = await certificate(ayse);
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("x-robots-tag"), /noindex/);
+  const data = (await response.json()).certificate;
+  assert.equal(data.name, "Ayşe Yılmaz");
+  assert.equal(data.serial, "HS-1");
+  assert.deepEqual(data.tr, ["15-22 Mayıs 2026 tarihinde gerçekleştirilen"]);
+  assert.deepEqual(data.en, ["Training conducted between 15–22 May 2026"]);
+  assert.equal(data.url, `https://eenstitu.com/sertifika/${ayse}`, "the QR code encodes the certificate's own link");
+  assert.deepEqual(data.record, { slug: "link-testi", title: "Link testi" });
+
+  const adminView = (await (await send("/api/verification?slug=link-testi", asAdmin)).json()).record;
+  assert.equal(adminView.certificates["Ayşe Yılmaz"].token, ayse);
+  const visitorView = (await (await send("/api/verification?slug=link-testi")).json()).record;
+  assert.deepEqual(visitorView.certificates, {}, "the group page still shows names only");
+
+  await send("/api/admin/records", json({ record: { slug: "link-testi", title: "Link testi (güncel)", graduates: ["Ayşe Yılmaz", "Mehmet Öz", "Yeni Kişi"] } }, cookie));
+  const second = await links();
+  assert.equal(second["Ayşe Yılmaz"], ayse, "editing the record keeps existing links");
+  assert.equal(second["Mehmet Öz"], first["Mehmet Öz"]);
+  assert.match(second["Yeni Kişi"], /^[A-Za-z0-9_-]{16}$/);
+
+  await send("/api/admin/records", json({ record: { slug: "link-testi", title: "Link testi", graduates: ["Mehmet Öz"] } }, cookie));
+  assert.equal((await certificate(ayse)).status, 404, "a removed participant's link stops working");
+  await send("/api/admin/records", json({ record: { slug: "link-testi", title: "Link testi", graduates: ["Mehmet Öz", "Ayşe Yılmaz"] } }, cookie));
+  assert.equal((await links())["Ayşe Yılmaz"], ayse, "re-adding the participant restores the same link");
+  assert.equal((await certificate(ayse)).status, 200);
+
+  assert.equal((await certificate("short")).status, 404);
+  assert.equal((await certificate("A".repeat(16))).status, 404);
+  const page = await send(`/sertifika/${ayse}`);
+  assert.equal(page.status, 200);
+  assert.match(page.headers.get("x-robots-tag"), /noindex/);
+  assert.match(await page.text(), /Sertifika/);
   db.close();
 });

@@ -209,6 +209,7 @@ export function downloadBlob(blob: Blob, fileName: string) {
   setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }
 
-export function verificationUrl(slug: string, key: string) {
-  return `https://eenstitu.com/${encodeURIComponent(slug)}#${key}`;
+/** Permanent certificate link encoded in the QR code (/sertifika/<token>). */
+export function certificateLink(token: string) {
+  return `https://eenstitu.com/sertifika/${token}`;
 }

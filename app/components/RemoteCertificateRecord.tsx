@@ -5,7 +5,7 @@ import { certificateKey } from "../certificates/key";
 import { applyTrainingRange, TrainingRange } from "../certificates/settings";
 
 type FileCertificate = { key: string; pdf: string; preview: string | null };
-type GeneratedCertificate = { key: string; generated: true; serial: string };
+type GeneratedCertificate = { key: string; generated: true; serial: string; token: string };
 type Certificate = FileCertificate | GeneratedCertificate;
 type GeneratedTemplate = { tr: string[]; en: string[]; date: string };
 type RecordData = {
@@ -51,9 +51,9 @@ export default function RemoteCertificateRecord({ slug }: { slug: string }) {
   }, [slug]);
 
   const inputFor = useCallback(async (name: string, certificate: GeneratedCertificate) => {
-    const { verificationUrl } = await import("../certificates/generator");
+    const { certificateLink } = await import("../certificates/generator");
     const template = record?.generated;
-    return { name, serial: certificate.serial, date: template?.date || "", tr: applyTrainingRange(template?.tr || [], record?.training_range), en: applyTrainingRange(template?.en || [], record?.training_range), url: verificationUrl(record?.slug || slug, certificate.key) };
+    return { name, serial: certificate.serial, date: template?.date || "", tr: applyTrainingRange(template?.tr || [], record?.training_range), en: applyTrainingRange(template?.en || [], record?.training_range), url: certificateLink(certificate.token) };
   }, [record, slug]);
 
   const show = useCallback((name: string, certificate: Certificate) => {

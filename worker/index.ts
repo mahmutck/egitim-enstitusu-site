@@ -1,7 +1,7 @@
 /** Cloudflare Worker entry point for the vinext-starter template. */
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
-import { CertificateSettings, formatTrainingRange, isIsoDate, parseCertificateSettings, sanitizeCertificateSettings } from "../app/certificates/settings";
+import { applyTrainingRange, CertificateSettings, formatTrainingRange, isIsoDate, parseCertificateSettings, sanitizeCertificateSettings } from "../app/certificates/settings";
 import { certificateKey } from "../app/certificates/key";
 
 interface CertificateStore {
@@ -93,6 +93,7 @@ async function ensureAdminDb(env: Env) {
     env.DB.prepare("CREATE TABLE IF NOT EXISTS password_reset_tokens (token_hash TEXT PRIMARY KEY, email TEXT NOT NULL, expires_at INTEGER NOT NULL, used_at INTEGER)"),
     env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_admin_sessions_expires ON admin_sessions(expires_at)"),
     env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_expires ON password_reset_tokens(expires_at)"),
+    env.DB.prepare("CREATE TABLE IF NOT EXISTS certificate_links (token TEXT PRIMARY KEY, slug TEXT NOT NULL, name_key TEXT NOT NULL, display_name TEXT NOT NULL, created_at INTEGER NOT NULL, UNIQUE (slug, name_key))"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS training_dates (slug TEXT PRIMARY KEY, start_date TEXT NOT NULL, end_date TEXT NOT NULL, updated_at INTEGER NOT NULL)"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS certificate_settings (slug TEXT PRIMARY KEY, settings_json TEXT NOT NULL, updated_at INTEGER NOT NULL)"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS certificate_files (slug TEXT NOT NULL, name_key TEXT NOT NULL, display_name TEXT NOT NULL, original_name TEXT, pdf_size INTEGER NOT NULL, has_preview INTEGER NOT NULL DEFAULT 0, version TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (slug, name_key))"),
@@ -237,9 +238,11 @@ async function handleAdminRecords(request:Request, env:Env) {
     for(const row of files.results) bySlug.set(row.slug,[...(bySlug.get(row.slug)||[]),row]);
     const settings=await env.DB.prepare("SELECT slug,settings_json FROM certificate_settings").all<{slug:string;settings_json:string}>();
     const settingsBySlug=new Map(settings.results.map(row=>[row.slug,row.settings_json]));
+    const links=new Map<string,Record<string,string>>();
+    for(const record of rows.results) links.set(String(record.slug),await ensureCertificateLinks(env,String(record.slug),parseGraduates(String(record.graduates_json||"[]"))));
     const records=rows.results.map(record=>{
       const slug=String(record.slug); const graduatesJson=String(record.graduates_json||"[]"); const graduates=parseGraduates(graduatesJson);
-      return {...record,training_range:formatTrainingRange(record.training_start as string|null,record.training_end as string|null),certificates:certificatesFor(slug,graduatesJson,bySlug.get(slug)||[]),certificate_settings:parseCertificateSettings(settingsBySlug.get(slug),graduates),participant_keys:Object.fromEntries(graduates.map(name=>[name,certificateKey(name)]))};
+      return {...record,certificate_links:links.get(slug)||{},training_range:formatTrainingRange(record.training_start as string|null,record.training_end as string|null),certificates:certificatesFor(slug,graduatesJson,bySlug.get(slug)||[]),certificate_settings:parseCertificateSettings(settingsBySlug.get(slug),graduates),participant_keys:Object.fromEntries(graduates.map(name=>[name,certificateKey(name)]))};
     });
     return Response.json({ok:true,records,storageReady:Boolean(env.CERTIFICATES)});
   }
@@ -269,7 +272,8 @@ async function handleVerification(request:Request, env:Env) {
   const graduatesJson=String(record.graduates_json||"[]");
   const settings=parseCertificateSettings(settingsRow?.settings_json,parseGraduates(graduatesJson));
   const generated=settings?.enabled?{tr:settings.tr,en:settings.en,date:settings.date}:null;
-  return Response.json({ok:true,record:{...record,admin:true,generated,certificates:certificatesFor(String(record.slug),graduatesJson,files.results,settings)}},{headers:{"Cache-Control":"private, no-store"}});
+  const links=await ensureCertificateLinks(env,String(record.slug),parseGraduates(graduatesJson));
+  return Response.json({ok:true,record:{...record,admin:true,generated,certificates:certificatesFor(String(record.slug),graduatesJson,files.results,settings,links)}},{headers:{"Cache-Control":"private, no-store"}});
 }
 
 // Participant certificates: PDF + optional JPEG preview in KV, current version in D1.
@@ -281,18 +285,54 @@ function certificateStorageKey(slug:string, key:string, version:string, ext:"pdf
 function certificateUrl(slug:string, key:string, version:string, ext:"pdf"|"jpg") { return `/sertifika/${encodeURIComponent(slug)}/${key}.${ext}?v=${version}`; }
 function parseGraduates(json:string) { try { const list=JSON.parse(json); return Array.isArray(list)?list.map(item=>String(item)):[]; } catch { return []; } }
 
-type CertificateEntry={key:string;pdf:string;preview:string|null;size:number;originalName:string|null}|{key:string;generated:true;serial:string};
+type CertificateEntry={key:string;pdf:string;preview:string|null;size:number;originalName:string|null}|{key:string;generated:true;serial:string;token:string};
 
 /** Uploaded PDFs win; with generation enabled every other participant gets a generated certificate. */
-function certificatesFor(slug:string, graduatesJson:string, rows:CertificateRow[], settings?:CertificateSettings|null) {
+function certificatesFor(slug:string, graduatesJson:string, rows:CertificateRow[], settings?:CertificateSettings|null, links:Record<string,string>={}) {
   const byKey=new Map(rows.map(row=>[row.name_key,row]));
   const result:Record<string,CertificateEntry>={};
   for(const name of parseGraduates(graduatesJson)) {
     const key=certificateKey(name); const row=byKey.get(key);
     if(row) result[name]={key,pdf:certificateUrl(slug,key,row.version,"pdf"),preview:row.has_preview?certificateUrl(slug,key,row.version,"jpg"):null,size:row.pdf_size,originalName:row.original_name};
-    else if(settings?.enabled) result[name]={key,generated:true,serial:settings.serials[name]||""};
+    else if(settings?.enabled) result[name]={key,generated:true,serial:settings.serials[name]||"",token:links[name]||""};
   }
   return result;
+}
+
+// Permanent, unguessable link per participant (QR code target). Created once; never changed or reused.
+const CERTIFICATE_LINK_ORIGIN="https://eenstitu.com";
+function linkToken() { const bytes=new Uint8Array(12); crypto.getRandomValues(bytes); return base64Url(bytes); }
+
+async function ensureCertificateLinks(env:Env, slug:string, graduates:string[]) {
+  const load=async()=>new Map((await env.DB.prepare("SELECT name_key,token FROM certificate_links WHERE slug=?").bind(slug).all<{name_key:string;token:string}>()).results.map(row=>[row.name_key,row.token]));
+  let byKey=await load();
+  const missing=[...new Set(graduates.map(name=>certificateKey(name)))].filter(key=>!byKey.has(key));
+  if(missing.length) {
+    const now=Date.now();
+    await env.DB.batch(missing.map(key=>env.DB.prepare("INSERT OR IGNORE INTO certificate_links (token,slug,name_key,display_name,created_at) VALUES (?,?,?,?,?)").bind(linkToken(),slug,key,graduates.find(name=>certificateKey(name)===key)||key,now)));
+    byKey=await load();
+  }
+  return Object.fromEntries(graduates.map(name=>[name,byKey.get(certificateKey(name))||""]).filter(([,token])=>token));
+}
+
+/** Public: the certificate behind a QR link. Works only while generation is on and the participant is still listed. */
+async function handlePublicCertificate(request:Request, env:Env) {
+  const headers={"Cache-Control":"private, no-store","X-Robots-Tag":"noindex, nofollow"};
+  const notFound=()=>Response.json({ok:false,message:"Sertifika bulunamadı."},{status:404,headers});
+  const token=new URL(request.url).searchParams.get("token")||"";
+  if(!/^[A-Za-z0-9_-]{16,64}$/.test(token)) return notFound();
+  await ensureAdminDb(env);
+  const link=await env.DB.prepare("SELECT slug,name_key FROM certificate_links WHERE token=?").bind(token).first<{slug:string;name_key:string}>();
+  if(!link) return notFound();
+  const record=await env.DB.prepare("SELECT v.slug,v.title,v.graduates_json,t.start_date AS training_start,t.end_date AS training_end FROM verification_records v LEFT JOIN training_dates t ON t.slug=v.slug WHERE v.slug=?").bind(link.slug).first<{slug:string;title:string;graduates_json:string;training_start:string|null;training_end:string|null}>();
+  if(!record) return notFound();
+  const graduates=parseGraduates(record.graduates_json);
+  const name=graduates.find(item=>certificateKey(item)===link.name_key);
+  const settingsRow=await env.DB.prepare("SELECT settings_json FROM certificate_settings WHERE slug=?").bind(link.slug).first<{settings_json:string}>();
+  const settings=parseCertificateSettings(settingsRow?.settings_json,graduates);
+  if(!name || !settings?.enabled) return notFound();
+  const range=formatTrainingRange(record.training_start,record.training_end);
+  return Response.json({ok:true,certificate:{name,serial:settings.serials[name]||"",date:settings.date,tr:applyTrainingRange(settings.tr,range),en:applyTrainingRange(settings.en,range),url:`${CERTIFICATE_LINK_ORIGIN}/sertifika/${token}`,record:{slug:record.slug,title:record.title}}},{headers});
 }
 
 async function handleCertificateSettings(request:Request, env:Env) {
@@ -403,7 +443,7 @@ function seoResponse(request: Request, response: Response) {
     headers.set("Link", `<https://eenstitu.com${url.pathname}>; rel="canonical"`);
   }
 
-  if (url.pathname === "/admin" || url.pathname.startsWith("/api/")) {
+  if (url.pathname === "/admin" || url.pathname.startsWith("/api/") || url.pathname.startsWith("/sertifika/")) {
     headers.set("X-Robots-Tag", "noindex, nofollow, noarchive");
   }
 
@@ -411,7 +451,7 @@ function seoResponse(request: Request, response: Response) {
 }
 
 function robotsTxt() {
-  return new Response("User-agent: *\nAllow: /\nDisallow: /admin\nDisallow: /api/\n\nSitemap: https://eenstitu.com/sitemap.xml\n", {
+  return new Response("User-agent: *\nAllow: /\nDisallow: /admin\nDisallow: /api/\nDisallow: /sertifika/\n\nSitemap: https://eenstitu.com/sitemap.xml\n", {
     headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "public, max-age=3600" },
   });
 }
@@ -467,6 +507,8 @@ const worker = {
       response = ["GET", "POST"].includes(request.method) ? await handleAdminRecords(request, env) : new Response("Method Not Allowed", { status: 405, headers:{Allow:"GET, POST"} });
     } else if (url.pathname === "/api/verification") {
       response = request.method === "GET" ? await handleVerification(request, env) : new Response("Method Not Allowed", { status: 405, headers:{Allow:"GET"} });
+    } else if (url.pathname === "/api/certificate") {
+      response = request.method === "GET" ? await handlePublicCertificate(request, env) : new Response("Method Not Allowed", { status: 405, headers:{Allow:"GET"} });
     } else if (url.pathname === "/api/admin/certificate-settings") {
       response = request.method === "POST" ? await handleCertificateSettings(request, env) : new Response("Method Not Allowed", { status: 405, headers:{Allow:"POST"} });
     } else if (url.pathname === "/api/admin/certificates") {

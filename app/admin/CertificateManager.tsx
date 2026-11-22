@@ -13,6 +13,8 @@ export type CertificateRecord = {
   certificates?: Record<string, AdminCertificate>;
   certificate_settings?: CertificateSettings | null;
   participant_keys?: Record<string, string>;
+  /** Permanent certificate link token per participant (QR code target). */
+  certificate_links?: Record<string, string>;
   training_range?: TrainingRange | null;
 };
 
@@ -79,8 +81,8 @@ export default function CertificateManager({ record, onChanged }: { record: Cert
   }
 
   async function certificateInput(name: string) {
-    const { verificationUrl } = await import("../certificates/generator");
-    return { name, serial: settings.serials[name] || "", date: settings.date, tr: applyTrainingRange(settings.tr, record.training_range), en: applyTrainingRange(settings.en, record.training_range), url: verificationUrl(record.slug, record.participant_keys?.[name] || "") };
+    const { certificateLink } = await import("../certificates/generator");
+    return { name, serial: settings.serials[name] || "", date: settings.date, tr: applyTrainingRange(settings.tr, record.training_range), en: applyTrainingRange(settings.en, record.training_range), url: certificateLink(record.certificate_links?.[name] || "") };
   }
 
   async function view(name: string) {
@@ -96,6 +98,14 @@ export default function CertificateManager({ record, onChanged }: { record: Cert
     } catch {
       setViewer((current) => (current ? { ...current, error: "Sertifika görüntülenemedi." } : current));
     }
+  }
+
+  async function copyLink(name: string) {
+    const token = record.certificate_links?.[name];
+    if (!token) return;
+    const url = `https://eenstitu.com/sertifika/${token}`;
+    try { await navigator.clipboard.writeText(url); setMessage(`${displayName(name)} için sertifika linki kopyalandı: ${url}`); }
+    catch { setMessage(`${displayName(name)} için sertifika linki: ${url}`); }
   }
 
   async function download(name: string) {
@@ -123,7 +133,7 @@ export default function CertificateManager({ record, onChanged }: { record: Cert
         <div>
           <p className="eyebrow">Sertifikalar</p>
           <h2>{record.title}</h2>
-          <p>Sertifikaları yalnızca yöneticiler görür ve indirir. Doğrulama sayfasını ziyaret edenler sadece isim listesini görür.</p>
+          <p>Grup sayfasını ziyaret edenler sadece isim listesini görür. Bir sertifikayı yalnızca yöneticiler ve o sertifikanın karekodunu/linkini bilen kişi görebilir.</p>
         </div>
         <div className="certificate-manager-actions">
           <a href={`/${encodeURIComponent(record.slug)}`} target="_blank" rel="noreferrer">Sayfayı aç ↗</a>
@@ -133,7 +143,7 @@ export default function CertificateManager({ record, onChanged }: { record: Cert
       <div className="certificate-template">
         <label className="certificate-toggle">
           <input type="checkbox" checked={settings.enabled} onChange={(event) => updateSettings({ enabled: event.target.checked })} />
-          <span><b>Sertifikaları şablondan üret</b><small>Ad, tarih, seri no ve eğitimin linkine giden QR kod otomatik yerleşir. Sertifikalar kaydedilmez, her görüntülemede yeniden üretilir.</small></span>
+          <span><b>Sertifikaları şablondan üret</b><small>Ad, tarih, seri no ve karekod otomatik yerleşir. Karekod her katılımcının kalıcı sertifika linkine gider; okutan kişi sertifikayı doğrudan görür. Sertifikalar kaydedilmez, her açılışta yeniden üretilir.</small></span>
         </label>
         <div className="admin-form certificate-template-form">
           <p className="wide certificate-token-hint">Metinde <code>{"{tarih}"}</code> yazan yere Türkçe, <code>{"{date}"}</code> yazan yere İngilizce eğitim tarih aralığı gelir{record.training_range ? <>: <b>{record.training_range.tr}</b> / <b>{record.training_range.en}</b></> : "."}</p>
@@ -179,6 +189,7 @@ export default function CertificateManager({ record, onChanged }: { record: Cert
                 <>
                   <button type="button" onClick={() => view(name)} disabled={!available(name) || Boolean(busy)}>Görüntüle</button>
                   <button type="button" onClick={() => download(name)} disabled={!available(name) || Boolean(busy)}>İndir</button>
+                  <button type="button" onClick={() => copyLink(name)} disabled={!settings.enabled || !record.certificate_links?.[name] || Boolean(busy)} title="Karekodun açtığı kalıcı sertifika linki">Linki kopyala</button>
                 </>
               )}
             </div>
