@@ -1,8 +1,9 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { FormEvent, Fragment, useState } from "react";
 import ProgramArtwork, { ArrowIcon } from "./components/ProgramArtwork";
 import ContactTiles from "./components/ContactTiles";
+import BreathField from "./components/BreathField";
 
 type Language = "tr" | "en";
 
@@ -373,9 +374,16 @@ export default function Home() {
       </header>
 
       <section id="top" className="hero">
+        <BreathField />
         <div className="hero-copy">
           <p className="eyebrow light">{t.eyebrow}</p>
-          <h1>{t.heroTitle}</h1>
+          <h1 key={language} aria-label={t.heroTitle}>
+            {t.heroTitle.split(" ").map((word, index) => (
+              <Fragment key={`${word}-${index}`}>
+                <span className="hero-word" aria-hidden="true" style={{ ["--i" as string]: index }}><span>{word}</span></span>{" "}
+              </Fragment>
+            ))}
+          </h1>
           <p className="hero-lead">{t.heroBody}</p>
           <div className="hero-actions">
             <a className="button button-gold" href="#programlar">{t.explore}</a>
@@ -383,20 +391,20 @@ export default function Home() {
           </div>
           <p className="hero-note"><span>i</span>{t.note}</p>
         </div>
-        <div className="hero-mark" aria-hidden="true">
-          <div className="seal-ring">
-            <img src="/images/logo-emblem-light.png" alt="" width="250" height="290" />
-          </div>
-          <p>RESEARCH <span>•</span> EDUCATION <span>•</span> PRACTICE</p>
+        <div className="hero-emblem" aria-hidden="true">
+          <img src="/images/logo-emblem-light.png" alt="" width="250" height="290" />
         </div>
-        <div className="hero-index" aria-hidden="true">01</div>
+        <div className="hero-foot" aria-hidden="true">
+          <span className="breath-cue"><i />{language === "tr" ? "Nefes ritmiyle" : "In rhythm with the breath"}</span>
+          <span>{language === "tr" ? "Araştırma · Eğitim · Uygulama" : "Research · Education · Practice"}</span>
+        </div>
       </section>
 
       <section className="stat-strip" aria-label="Institute statistics">
         {t.stats.map(([value, label]) => <div key={label}><strong>{value}</strong><span>{label}</span></div>)}
       </section>
 
-      <section className="institutional-motto" aria-label="Kurumsal yaklaşım">
+      <section className="institutional-motto" aria-label="Kurumsal yaklaşım" lang="la">
         <span>Scientia</span><i>•</i><span>Humanitas</span><i>•</i><span>Praxis</span>
       </section>
 
