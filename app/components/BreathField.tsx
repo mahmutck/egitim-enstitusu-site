@@ -145,7 +145,7 @@ export default function BreathField() {
     }
 
     const intersection = new IntersectionObserver(([entry]) => {
-      visible = entry.isIntersecting && !document.hidden;
+      visible = entry.isIntersecting;
     });
     intersection.observe(canvas);
     window.addEventListener("pointermove", onPointer, { passive: true });
