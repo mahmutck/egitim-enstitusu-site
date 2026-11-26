@@ -503,7 +503,7 @@ export default function ProgramFigure({ kind, labels }: { kind: FigureKind; labe
     // Time only advances while the figure is visible, so a figure never
     // "skips ahead" when the visitor scrolls back to it.
     function loop(now: number) {
-      const delta = Math.min(now - last, 100);
+      const delta = Math.max(0, Math.min(now - last, 100)); // rAF time can precede `last`
       last = now;
       if (onScreen) {
         elapsed += delta;
