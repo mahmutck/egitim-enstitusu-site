@@ -5,6 +5,7 @@ import ProgramArtwork, { ArrowIcon } from "./components/ProgramArtwork";
 import ContactTiles from "./components/ContactTiles";
 import BreathField from "./components/BreathField";
 import CountUp from "./components/CountUp";
+import CertificateSpecimen from "./components/CertificateSpecimen";
 import useScrollEffects from "./components/useScrollEffects";
 
 type Language = "tr" | "en";
@@ -69,6 +70,16 @@ const content = {
       ["Şeffaf Yaklaşım", "Eğitimlerimizin terapi, tedavi veya teşhis olmadığını her adımda açıkça belirtiriz."],
       ["Esnek Katılım", "Yüz yüze ve çevrim içi seçeneklerle farklı takvimlere uyum sağlarız."],
     ],
+    trustEyebrow: "Belgelendirme",
+    trustTitle: "Her sertifika doğrulanabilir.",
+    trustBody: "Enstitümüzün verdiği her belge, kimin tarafından ve hangi eğitim için düzenlendiği kolayca kontrol edilebilecek şekilde kayıt altındadır.",
+    trustSteps: [
+      ["Seri numarası", "Her sertifikaya otomatik olarak benzersiz bir seri numarası verilir."],
+      ["QR kod", "Sertifika üzerindeki QR kod okutulduğunda belgenin enstitü sistemindeki orijinal kopyası açılır."],
+      ["Mezun kaydı", "Eğitimi tamamlayan katılımcılar, ilgili eğitim grubunun doğrulama kaydında listelenir."],
+    ],
+    trustLink: "Sertifika doğrulama için bize yazın",
+    founder: "Kurucu",
     teamTitle: "Eğitmen Kadromuz",
     teamBody:
       "Eğitimlerimiz; psikoloji, psikiyatri, sosyoloji ve uygulama alanlarından gelen disiplinlerarası bir kadroyla yürütülür.",
@@ -154,6 +165,16 @@ const content = {
       ["Transparent Practice", "We clearly state that our education is not therapy, treatment, or diagnosis."],
       ["Flexible Access", "In-person and online formats accommodate different schedules."],
     ],
+    trustEyebrow: "Certification",
+    trustTitle: "Every certificate can be verified.",
+    trustBody: "Every document the institute issues is on record, so anyone can check who issued it and for which training.",
+    trustSteps: [
+      ["Serial number", "Each certificate automatically receives a unique serial number."],
+      ["QR code", "Scanning the QR code on the certificate opens the original copy held in the institute's system."],
+      ["Graduate record", "Participants who complete a training are listed in that group's verification record."],
+    ],
+    trustLink: "Contact us about certificate verification",
+    founder: "Founder",
     teamTitle: "Our Instructors",
     teamBody:
       "Our programs are delivered by an interdisciplinary faculty with experience across psychology, psychiatry, sociology, and applied learning.",
@@ -483,17 +504,55 @@ export default function Home() {
             })}
           </ol>
         </div>
-        <div className="faculty-note">
-          <div><p className="eyebrow light">Faculty</p><h3>{t.teamTitle}</h3></div>
-          <p>{t.teamBody}</p>
-          <div className="faculty-grid">
-            {faculty.map((member) => (
-              <article className={`faculty-card${"image" in member ? " faculty-card-with-photo" : ""}`} key={member.name}>
-                {"image" in member ? <img className="faculty-photo" src={member.image} alt={member.name} width={560} height={700} loading="lazy" /> : <span>{member.name.split(" ").map((part) => part[0]).join("")}</span>}
-                <div><h4>{member.name}</h4><b>{member.title}</b>{member.bio && <p>{member.bio}</p>}</div>
-              </article>
-            ))}
+        <div className="faculty-editorial">
+          <div className="faculty-heading">
+            <p className="eyebrow light">{language === "tr" ? "Kadro" : "Faculty"}</p>
+            <h3>{t.teamTitle}</h3>
+            <p>{t.teamBody}</p>
           </div>
+          {(() => {
+            const [lead, ...rest] = faculty;
+            return (
+              <>
+                <article className="faculty-lead">
+                  <img className="faculty-lead-photo" src={lead.image} alt={lead.name} width={560} height={700} loading="lazy" />
+                  <div>
+                    <span className="faculty-role-tag">{t.founder}</span>
+                    <h4>{lead.name}</h4>
+                    <b>{lead.title}</b>
+                    <blockquote>{lead.bio}</blockquote>
+                  </div>
+                </article>
+                <div className="faculty-roster">
+                  {rest.map((member) => (
+                    <article className="faculty-person" key={member.name}>
+                      <div className="faculty-portrait"><img src={member.image} alt={member.name} width={560} height={700} loading="lazy" /></div>
+                      <h4>{member.name}</h4>
+                      <b>{member.title}</b>
+                      {member.bio && <p>{member.bio}</p>}
+                    </article>
+                  ))}
+                </div>
+              </>
+            );
+          })()}
+        </div>
+      </section>
+
+      <section id="belgelendirme" className="section trust-section">
+        <div className="trust-grid">
+          <div className="trust-copy">
+            <div className="section-heading">
+              <p className="eyebrow">{t.trustEyebrow}</p>
+              <h2>{t.trustTitle}</h2>
+            </div>
+            <p className="trust-body">{t.trustBody}</p>
+            <ol className="trust-steps">
+              {t.trustSteps.map(([title, body], index) => <li key={title}><span>0{index + 1}</span><div><h3>{title}</h3><p>{body}</p></div></li>)}
+            </ol>
+            <a className="text-link" href="/iletisim">{t.trustLink} <ArrowIcon /></a>
+          </div>
+          <CertificateSpecimen language={language} />
         </div>
       </section>
 
