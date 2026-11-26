@@ -669,3 +669,12 @@ h1, h2, h3, h4 { font-variation-settings: "SOFT" 60, "WONK" 0; }
   .hero-emblem { animation: none; opacity: 1; }
   .hero-emblem img { animation: none; }
 }
+
+/* Living scientific figures on the programme cards. */
+.program-figure { display: block; width: 100%; flex: 1; min-height: 260px; max-height: 400px; aspect-ratio: 400 / 440; margin: 8px auto; }
+.art-figure-caption { display: flex; flex-direction: column; gap: 4px; font-family: var(--serif); font-size: 14px; font-style: italic; letter-spacing: 0; line-height: 1.35; text-transform: none; color: var(--gold-pale); }
+.art-figure-caption b { font-family: var(--sans); font-size: 9px; font-style: normal; font-weight: 700; letter-spacing: .16em; text-transform: uppercase; opacity: .7; }
+@media (max-width: 760px) {
+  .program-figure { height: 260px; min-height: 0; flex: none; }
+  .art-figure-caption { font-size: 12px; }
+}
