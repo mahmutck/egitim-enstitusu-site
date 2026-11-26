@@ -34,7 +34,7 @@ const content = {
     whatsapp: "WhatsApp’tan Bilgi Al",
     note: "Eğitim içeriklerimiz terapi, tedavi veya teşhis amacı taşımaz.",
     stats: [
-      ["27.000+", "Instagram takipçisi"],
+      ["43.000+", "Instagram takipçisi"],
       ["3", "Aktif eğitim programı"],
       ["130+", "Eğitim içeriği"],
     ],
@@ -119,7 +119,7 @@ const content = {
     whatsapp: "Ask on WhatsApp",
     note: "Our educational content does not constitute therapy, treatment, or diagnosis.",
     stats: [
-      ["27,000+", "Instagram followers"],
+      ["43,000+", "Instagram followers"],
       ["3", "Active training programs"],
       ["130+", "Educational resources"],
     ],
