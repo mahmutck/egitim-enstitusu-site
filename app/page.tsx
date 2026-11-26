@@ -4,6 +4,8 @@ import { FormEvent, Fragment, useState } from "react";
 import ProgramArtwork, { ArrowIcon } from "./components/ProgramArtwork";
 import ContactTiles from "./components/ContactTiles";
 import BreathField from "./components/BreathField";
+import CountUp from "./components/CountUp";
+import useScrollEffects from "./components/useScrollEffects";
 
 type Language = "tr" | "en";
 
@@ -317,6 +319,7 @@ const faculty = [
 
 export default function Home() {
   const [language, setLanguage] = useState<Language>("tr");
+  useScrollEffects([language]);
   const [formStatus, setFormStatus] = useState<"idle" | "sending" | "success" | "error">("idle");
   const [formMessage, setFormMessage] = useState("");
   const t = content[language];
@@ -401,7 +404,7 @@ export default function Home() {
       </section>
 
       <section className="stat-strip" aria-label="Institute statistics">
-        {t.stats.map(([value, label]) => <div key={label}><strong>{value}</strong><span>{label}</span></div>)}
+        {t.stats.map(([value, label]) => <div key={label}><CountUp value={value} locale={language === "tr" ? "tr-TR" : "en-US"} /><span>{label}</span></div>)}
       </section>
 
       <section className="institutional-motto" aria-label="Kurumsal yaklaşım" lang="la">
@@ -462,12 +465,23 @@ export default function Home() {
       </section>
 
       <section id="yaklasim" className="section approach-section">
-        <div className="section-heading approach-heading">
-          <p className="eyebrow light">{t.whyEyebrow}</p>
-          <h2>{t.whyTitle}</h2>
-        </div>
-        <div className="approach-grid">
-          {t.why.map(([title, body], index) => <article key={title}><span>0{index + 1}</span><h3>{title}</h3><p>{body}</p></article>)}
+        <div className="manifesto">
+          <div className="manifesto-heading">
+            <p className="eyebrow light">{t.whyEyebrow}</p>
+            <h2>{t.whyTitle}</h2>
+          </div>
+          <ol className="manifesto-list">
+            {t.why.map(([title, body], index) => {
+              const words = body.split(" ");
+              return (
+                <li className="manifesto-line" key={title} style={{ ["--n" as string]: words.length }}>
+                  <span className="manifesto-index">0{index + 1}</span>
+                  <h3>{title}</h3>
+                  <p>{words.map((word, wordIndex) => <Fragment key={wordIndex}><span style={{ ["--i" as string]: wordIndex }}>{word}</span>{" "}</Fragment>)}</p>
+                </li>
+              );
+            })}
+          </ol>
         </div>
         <div className="faculty-note">
           <div><p className="eyebrow light">Faculty</p><h3>{t.teamTitle}</h3></div>

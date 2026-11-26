@@ -678,3 +678,32 @@ h1, h2, h3, h4 { font-variation-settings: "SOFT" 60, "WONK" 0; }
   .program-figure { height: 260px; min-height: 0; flex: none; }
   .art-figure-caption { font-size: 12px; }
 }
+
+/* Phase 3: scroll reveals, count-up figures, approach manifesto. */
+.reveal-ready [data-reveal] { opacity: 0; transform: translateY(26px); transition: opacity .9s cubic-bezier(.2,.7,.2,1) var(--reveal-delay, 0ms), transform .9s cubic-bezier(.2,.7,.2,1) var(--reveal-delay, 0ms); }
+.reveal-ready [data-reveal].is-revealed { opacity: 1; transform: none; }
+.count-up { font-variant-numeric: tabular-nums; }
+
+.manifesto { display: grid; grid-template-columns: minmax(0, .8fr) minmax(0, 1.2fr); gap: clamp(40px, 7vw, 120px); align-items: start; }
+.manifesto-heading { position: sticky; top: 120px; }
+.manifesto-heading h2 { margin: 0; color: var(--white); font-family: var(--serif); font-size: clamp(40px, 4.4vw, 64px); font-weight: 400; line-height: 1.06; letter-spacing: -.03em; }
+.manifesto-list { margin: 0; padding: 0; list-style: none; }
+.manifesto-line { position: relative; padding: 46px 0 50px; border-top: 1px solid rgba(232,213,169,.2); }
+.manifesto-line:last-child { border-bottom: 1px solid rgba(232,213,169,.2); }
+.manifesto-index { position: absolute; top: 48px; right: 0; color: var(--gold); font-family: var(--serif); font-size: 13px; letter-spacing: .08em; }
+.manifesto-line h3 { margin: 0 0 16px; color: var(--gold-pale); font-family: var(--serif); font-size: 19px; font-style: italic; font-weight: 400; font-variation-settings: "SOFT" 100; }
+.manifesto-line p { margin: 0; max-width: 30ch; color: var(--white); font-family: var(--serif); font-size: clamp(26px, 2.6vw, 38px); font-weight: 350; line-height: 1.28; letter-spacing: -.015em; }
+.manifesto-line p span { opacity: clamp(.16, calc(var(--p, 1) * (var(--n) + 2) - var(--i)), 1); transition: opacity .25s linear; }
+.approach-section .faculty-note { margin-top: clamp(90px, 10vw, 140px); }
+@media (max-width: 900px) {
+  .manifesto { grid-template-columns: 1fr; gap: 26px; }
+  .manifesto-heading { position: static; }
+  .manifesto-line { padding: 36px 0 38px; }
+  .manifesto-index { top: 38px; }
+  .manifesto-line p { font-size: 25px; }
+  .manifesto-heading h2 { font-size: 40px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .reveal-ready [data-reveal] { opacity: 1; transform: none; transition: none; }
+  .manifesto-line p span { opacity: 1; transition: none; }
+}
