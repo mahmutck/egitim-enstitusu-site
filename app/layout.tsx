@@ -1,8 +1,11 @@
 import type { Metadata } from "next";
+import { preload } from "react-dom";
 import "@fontsource-variable/fraunces/full.css";
 import "@fontsource-variable/fraunces/full-italic.css";
 import "@fontsource-variable/instrument-sans/index.css";
 import "./globals.css";
+import frauncesLatin from "@fontsource-variable/fraunces/files/fraunces-latin-full-normal.woff2?url";
+import frauncesLatinExt from "@fontsource-variable/fraunces/files/fraunces-latin-ext-full-normal.woff2?url";
 import FloatingContactVisibility from "./components/FloatingContactVisibility";
 
 const organizationSchema = {
@@ -63,5 +66,7 @@ export const metadata: Metadata = {
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
+  // Preload the display serif so the hero headline does not shift when the font arrives.
+  for (const href of [frauncesLatin, frauncesLatinExt]) preload(href, { as: "font", type: "font/woff2", crossOrigin: "" });
   return <html lang="tr"><body><script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(organizationSchema) }} />{children}<FloatingContactVisibility /></body></html>;
 }

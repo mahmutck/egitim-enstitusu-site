@@ -4,7 +4,7 @@ export default function SubpageHeader() {
       <div className="academic-bar"><span>Psikolojik ve Somatik Araştırmalarda Öncü</span><span>Araştırma · Eğitim · Uygulama</span></div>
       <header className="site-header subpage-header">
         <a className="brand" href="/" aria-label="Eğitim Enstitüsü ana sayfa">
-          <img src="/images/logo-emblem.png" alt="" width="76" height="80" />
+          <img src="/images/logo-emblem.webp" alt="" width="76" height="80" />
           <span><strong>Psikolojik Araştırmalar Enstitüsü</strong><small>Eğitim Enstitüsü · Türkiye</small></span>
         </a>
         <nav aria-label="Ana navigasyon">

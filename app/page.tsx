@@ -377,7 +377,7 @@ export default function Home() {
       </div>
       <header className="site-header">
         <a className="brand" href="#top" aria-label={t.brand}>
-          <img src="/images/logo-emblem.png" alt="" width="58" height="64" />
+          <img src="/images/logo-emblem.webp" alt="" width="58" height="64" />
           <span><strong>{t.brand}</strong><small>{language === "tr" ? "Eğitim Enstitüsü · Türkiye" : "Education Institute · Türkiye"}</small></span>
         </a>
         <nav aria-label="Main navigation">
@@ -390,7 +390,7 @@ export default function Home() {
           </div>
         </details>
         <div className="header-actions">
-          <button className="language" onClick={() => setLanguage(language === "tr" ? "en" : "tr")} aria-label="Change language">
+          <button className="language" onClick={() => setLanguage(language === "tr" ? "en" : "tr")} aria-label={language === "tr" ? "EN – Switch to English" : "TR – Türkçeye geç"}>
             {language === "tr" ? "EN" : "TR"}
           </button>
           <a className="button button-small" href="/iletisim">{t.apply}</a>
@@ -416,7 +416,7 @@ export default function Home() {
           <p className="hero-note"><span>i</span>{t.note}</p>
         </div>
         <div className="hero-emblem" aria-hidden="true">
-          <img src="/images/logo-emblem-light.png" alt="" width="250" height="290" />
+          <img src="/images/logo-emblem-light.webp" alt="" width="250" height="290" fetchPriority="high" />
         </div>
         <div className="hero-foot" aria-hidden="true">
           <span className="breath-cue"><i />{language === "tr" ? "Nefes ritmiyle" : "In rhythm with the breath"}</span>
@@ -616,7 +616,7 @@ export default function Home() {
       </section>
 
       <footer>
-        <div className="footer-brand"><img src="/images/logo-emblem-light.png" alt="" width="62" height="72" /><div><strong>{t.brand}</strong><p>{t.footerAbout}</p></div></div>
+        <div className="footer-brand"><img src="/images/logo-emblem-light.webp" alt="" width="62" height="72" loading="lazy" /><div><strong>{t.brand}</strong><p>{t.footerAbout}</p></div></div>
         <div className="footer-links">{t.nav.map((label, index) => <a key={label} href={navHrefs[index]}>{label}</a>)}</div>
         <p className="copyright">© 2026 {t.brand}. {t.rights}</p>
       </footer>

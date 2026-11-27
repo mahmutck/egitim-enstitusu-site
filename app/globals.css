@@ -300,7 +300,7 @@ footer { display: grid; grid-template-columns: 1fr auto; gap: 50px; align-items:
 .footer-brand p { margin: 7px 0 0; color: rgba(255,255,255,.5); font-size: 12px; }
 .footer-links { display: flex; gap: 25px; flex-wrap: wrap; justify-content: flex-end; }
 .footer-links a { color: rgba(255,255,255,.65); font-size: 9px; }
-.copyright { grid-column: 1 / -1; margin: 38px 0 0; padding-top: 22px; border-top: 1px solid rgba(255,255,255,.12); color: rgba(255,255,255,.38); font-size: 10px; letter-spacing: .04em; }
+.copyright { grid-column: 1 / -1; margin: 38px 0 0; padding-top: 22px; border-top: 1px solid rgba(255,255,255,.12); color: rgba(255,255,255,.6); font-size: 10px; letter-spacing: .04em; }
 
 .floating-contact {
   position: fixed; right: 24px; bottom: 22px; z-index: 100;
@@ -693,7 +693,7 @@ h1, h2, h3, h4 { font-variation-settings: "SOFT" 60, "WONK" 0; }
 .manifesto-index { position: absolute; top: 48px; right: 0; color: var(--gold); font-family: var(--serif); font-size: 13px; letter-spacing: .08em; }
 .manifesto-line h3 { margin: 0 0 16px; color: var(--gold-pale); font-family: var(--serif); font-size: 19px; font-style: italic; font-weight: 400; font-variation-settings: "SOFT" 100; }
 .manifesto-line p { margin: 0; max-width: 30ch; color: var(--white); font-family: var(--serif); font-size: clamp(26px, 2.6vw, 38px); font-weight: 350; line-height: 1.28; letter-spacing: -.015em; }
-.manifesto-line p span { opacity: clamp(.16, calc(var(--p, 1) * (var(--n) + 2) - var(--i)), 1); transition: opacity .25s linear; }
+.manifesto-line p span { opacity: clamp(.42, calc(var(--p, 1) * (var(--n) + 2) - var(--i)), 1); transition: opacity .25s linear; }
 .approach-section .faculty-note { margin-top: clamp(90px, 10vw, 140px); }
 @media (max-width: 900px) {
   .manifesto { grid-template-columns: 1fr; gap: 26px; }

@@ -42,7 +42,7 @@ export default function CertificateSpecimen({ language }: { language: "tr" | "en
     <figure className="cert-specimen" aria-hidden="true">
       <div className="cert-paper">
         <span className="cert-sample">{tr ? "Örnek" : "Specimen"}</span>
-        <img className="cert-emblem" src="/images/logo-emblem.png" alt="" width="58" height="64" />
+        <img className="cert-emblem" src="/images/logo-emblem.webp" alt="" width="58" height="64" loading="lazy" />
         <p className="cert-org">{tr ? "Psikolojik Araştırmalar Enstitüsü" : "Psychological Research Institute"}</p>
         <p className="cert-title">{tr ? "Sertifika" : "Certificate"}</p>
         <p className="cert-text">{tr ? "Hipnosomatik Eğitimi’ni başarıyla tamamlamıştır." : "has successfully completed Hypnosomatic Training."}</p>
